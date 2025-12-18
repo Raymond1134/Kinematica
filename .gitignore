@@ -1,0 +1,25 @@
+# Build directories
+build/
+out/
+
+# VS Code
+.vscode/.cmake/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Compiled binaries
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+
+# vcpkg
+vcpkg_installed/

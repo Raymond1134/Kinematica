@@ -1,0 +1,71 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Configure (vcpkg)",
+      "type": "shell",
+      "command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+      "args": [
+        "-S", ".",
+        "-B", "build",
+        "-DCMAKE_TOOLCHAIN_FILE=${env:USERPROFILE}\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake",
+        "-DVCPKG_TARGET_TRIPLET=x64-windows"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "Configure (FetchContent)",
+      "type": "shell",
+      "command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+      "args": ["-S", ".", "-B", "build"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "Build Release",
+      "type": "shell",
+      "command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+      "args": ["--build", "build", "--config", "Release"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$gcc",
+      "dependsOn": ["Configure (vcpkg)"]
+    },
+    {
+      "label": "Build Debug",
+      "type": "shell",
+      "command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+      "args": ["--build", "build", "--config", "Debug"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": "$gcc",
+      "dependsOn": ["Configure (vcpkg)"]
+    },
+    {
+      "label": "Run (Release)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\build\\Release\\app.exe",
+      "group": "none"
+    },
+    {
+      "label": "Run (Debug)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\build\\Debug\\app.exe",
+      "group": "none"
+    }
+  ]
+}
