@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../math/Vec3.h"
+
 struct RigidBody;
 
 class Renderer {
@@ -9,9 +11,13 @@ public:
     void drawRigidBody(const RigidBody* body, float size = 0.5f);
     void endFrame();
     void shutdown();
+    
+    Vec3 getCameraPosition() const;
+    Vec3 getCameraForward() const;
 
 private:
-    float camYaw = 45.0f;
-    float camPitch = 30.0f;
-    float camDistance = 12.0f;
+    Vec3 camPos = {8.0f, 6.0f, 8.0f};
+    float camYaw = 225.0f;
+    float camPitch = -20.0f;
+    float moveSpeed = 8.0f; // meters/sec
 };

@@ -1,6 +1,7 @@
+
 # Kinematica
 
-A physics engine and sandbox.
+A user-driven 3D rigid-body physics sandbox and engine.
 
 ## Build Options (Windows)
 
@@ -48,11 +49,28 @@ cmake --build build --config Release
 - `render/` — 3D viewer using raylib (`Renderer`)
 - `main.cpp` — Application entry with fixed-timestep physics loop
 
+
 ## Controls
 
 - **Right-click + drag** — Orbit camera
 - **Mouse wheel** — Zoom in/out
+- **WASD** — Move camera (free-fly)
+- **1** — Spawn sphere at camera
+- **2** — Spawn box at camera
+- **3** — Spawn capsule at camera
+- **Alt+Enter** — Toggle fullscreen
 - **ESC or close window** — Exit
+
+
+## Features
+
+- User-driven: Simulation starts empty; spawn bodies with keys 1/2/3
+- Rigid body physics: box, sphere, capsule colliders
+- Fixed timestep, sequential impulse solver, manifold contacts
+- Sleep/wake logic, restitution, friction
+- Visual polish: wireframes, axis markers, cube outlines
+- Fullscreen toggle (Alt+Enter)
+- Clean separation: math, physics, rendering modules
 
 ## Notes
 

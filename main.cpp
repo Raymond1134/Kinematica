@@ -3,6 +3,7 @@
 #include "render/Renderer.h"
 #include <chrono>
 #include <raylib.h>
+#include <list>
 
 static float getDeltaTime() {
     static auto last = std::chrono::high_resolution_clock::now();
@@ -17,18 +18,83 @@ int main() {
     float accumulator = 0.0f;
     
     PhysicsWorld physicsWorld;
+    std::list<RigidBody> dynamicBodies;
 
-    RigidBody b1; b1.position = {0.0f, 3.0f, 0.0f}; b1.velocity = {0.0f, 0.0f, 0.0f}; b1.mass = 1.0f;
-    RigidBody b2; b2.position = {1.0f, 8.0f, 3.0f}; b2.velocity = {0.0f, -100.0f, 0.0f}; b2.mass = 2.0f;
-    physicsWorld.addRigidBody(&b1);
-    physicsWorld.addRigidBody(&b2);
 
     Renderer renderer;
     if (!renderer.init(1280, 720, "Kinematica Sandbox")) return -1;
 
+    SetExitKey(0);
+
     while (!WindowShouldClose()) {
+        if ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_ENTER)) {
+            if (IsWindowFullscreen()) CloseWindow(), InitWindow(1280, 720, "Kinematica Sandbox");
+            else ToggleFullscreen();
+        }
         float frameTime = getDeltaTime();
         accumulator += frameTime;
+
+        if (IsKeyPressed(KEY_ONE)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            
+            RigidBody newSphere;
+            newSphere.position = camPos + camFwd * 2.0f;
+            newSphere.velocity = camFwd * 10.0f;
+            newSphere.angularVelocity = {0.0f, 0.0f, 0.0f};
+            newSphere.orientation = Quat::identity();
+            newSphere.mass = 1.0f;
+            newSphere.friction = 0.40f;
+            newSphere.restitution = 0.26f;
+            newSphere.collider = Collider::createSphere(0.5f);
+            dynamicBodies.push_back(newSphere);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+        
+        if (IsKeyPressed(KEY_TWO)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            
+            RigidBody newBox;
+            newBox.position = camPos + camFwd * 2.0f;
+            newBox.velocity = camFwd * 10.0f;
+            Vec3 up = {0.0f, 1.0f, 0.0f};
+            Vec3 right = Vec3::cross(up, camFwd).normalized();
+            if (right.lengthSq() < 1e-8f) right = {1.0f, 0.0f, 0.0f};
+
+            float tiltDeg = (float)GetRandomValue(-5, 5);
+            float rollDeg = (float)GetRandomValue(-5, 5);
+            Quat qTilt = Quat::fromAxisAngle(right, tiltDeg * DEG2RAD);
+            Quat qRoll = Quat::fromAxisAngle(camFwd, rollDeg * DEG2RAD);
+            newBox.orientation = (qRoll * qTilt).normalized();
+
+            float spin = 7.0f;
+            float spinJitter = (float)GetRandomValue(-5, 5) / 5.0f;
+            newBox.angularVelocity = right * (spin * (1.0f + 0.25f * spinJitter)) + up * (1.0f * spinJitter);
+            newBox.mass = 3.0f;
+            newBox.friction = 0.60f;
+            newBox.restitution = 0.035f;
+            newBox.collider = Collider::createBox({0.4f, 0.4f, 0.4f});
+            dynamicBodies.push_back(newBox);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+        
+        if (IsKeyPressed(KEY_THREE)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            
+            RigidBody newCapsule;
+            newCapsule.position = camPos + camFwd * 2.0f;
+            newCapsule.velocity = camFwd * 10.0f;
+            newCapsule.angularVelocity = {0.0f, 0.0f, 0.0f};
+            newCapsule.orientation = Quat::identity();
+            newCapsule.mass = 1.2f;
+            newCapsule.friction = 0.25f;
+            newCapsule.restitution = 0.22f;
+            newCapsule.collider = Collider::createCapsule(0.3f, 0.5f);
+            dynamicBodies.push_back(newCapsule);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
 
         while (accumulator >= FIXED_DT) {
             physicsWorld.step(FIXED_DT);
@@ -36,8 +102,9 @@ int main() {
         }
 
         renderer.beginFrame();
-        renderer.drawRigidBody(&b1, 0.5f);
-        renderer.drawRigidBody(&b2, 0.5f);
+        for (auto& body : dynamicBodies) {
+            renderer.drawRigidBody(&body);
+        }
         renderer.endFrame();
     }
 
