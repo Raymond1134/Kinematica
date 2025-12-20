@@ -3,13 +3,17 @@
 #include "../math/Vec3.h"
 #include "RigidBody.h"
 #include "Spring.h"
+
 #include <vector>
 #include <cmath>
 #include <unordered_map>
 #include <cstdint>
+#include <omp.h>
 
 class PhysicsWorld {
 public:
+    std::vector<RigidBody*> bodies;
+    float currentDt = 1.0f / 60.0f;
     Vec3 gravity = {0.0f, -9.81f, 0.0f};
     std::vector<Spring> springs;
 
@@ -35,7 +39,7 @@ public:
             float dist = delta.length();
             if (dist < 1e-6f) continue;
             Vec3 dir = delta / dist;
-            float displacement = spring.restLength - dist; // FIX: invert direction
+            float displacement = spring.restLength - dist;
             float relVel = Vec3::dot(spring.b->velocity - spring.a->velocity, dir);
             float forceMag = spring.stiffness * displacement - spring.damping * relVel;
             Vec3 force = dir * forceMag;
@@ -43,22 +47,75 @@ public:
             if (!spring.b->isStatic && spring.b->mass > 0.0f) spring.b->velocity += force * (deltaTime / spring.b->mass);
         }
         currentDt = deltaTime;
-        for (RigidBody* body: bodies) {
+
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < (int)bodies.size(); ++i) {
+            RigidBody* body = bodies[i];
             if (!body) continue;
             body->hadContactThisStep = false;
         }
 
-        for (RigidBody* body: bodies) {
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < (int)bodies.size(); ++i) {
+            RigidBody* body = bodies[i];
             if (body->isStatic) continue;
             if (body->sleeping) continue;
             body->velocity += gravity * deltaTime;
         }
 
-        for (RigidBody* body: bodies) {
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < (int)bodies.size(); ++i) {
+            RigidBody* body = bodies[i];
             if (body->isStatic) continue;
             if (body->sleeping) continue;
             body->position += body->velocity * deltaTime;
             body->orientation.integrateAngularVelocity(body->angularVelocity, deltaTime);
+        }
+
+        // Clamp velocities and apply damping
+        const float maxVelocity = 999.0f;
+        const float maxAngularVelocity = 999.0f;
+        for (RigidBody* body: bodies) {
+            if (body->isStatic) continue;
+            if (body->sleeping) continue;
+            float speedSq = body->velocity.x * body->velocity.x + body->velocity.y * body->velocity.y + body->velocity.z * body->velocity.z;
+            if (speedSq > maxVelocity * maxVelocity) {
+                float speed = sqrtf(speedSq);
+                body->velocity = body->velocity * (maxVelocity / speed);
+            }
+            float angSpeedSq = body->angularVelocity.x * body->angularVelocity.x + body->angularVelocity.y * body->angularVelocity.y + body->angularVelocity.z * body->angularVelocity.z;
+            if (angSpeedSq > maxAngularVelocity * maxAngularVelocity) {
+                float angSpeed = sqrtf(angSpeedSq);
+                body->angularVelocity = body->angularVelocity * (maxAngularVelocity / angSpeed);
+            }
+            float lin = expf(-linearDampingPerSecond * deltaTime);
+            float ang = expf(-angularDampingPerSecond * deltaTime);
+            body->velocity = body->velocity * lin;
+            body->angularVelocity = body->angularVelocity * ang;
+        }
+
+        // Sleep logic
+        const float sleepLinear = 0.02f;
+        const float sleepAngular = 0.01f;
+        const float sleepTime = 0.4f;
+        for (RigidBody* body: bodies) {
+            if (body->isStatic) continue;
+            if (body->sleeping) {
+                body->sleepTimer = sleepTime;
+                continue;
+            }
+            float v2 = body->velocity.x * body->velocity.x + body->velocity.y * body->velocity.y + body->velocity.z * body->velocity.z;
+            float w2 = body->angularVelocity.x * body->angularVelocity.x + body->angularVelocity.y * body->angularVelocity.y + body->angularVelocity.z * body->angularVelocity.z;
+            if (body->hadContactThisStep && v2 < sleepLinear * sleepLinear && w2 < sleepAngular * sleepAngular) {
+                body->sleepTimer += deltaTime;
+                if (body->sleepTimer >= sleepTime) {
+                    body->sleeping = true;
+                    body->velocity = {0.0f, 0.0f, 0.0f};
+                    body->angularVelocity = {0.0f, 0.0f, 0.0f};
+                }
+            } else {
+                body->sleepTimer = 0.0f;
+            }
         }
 
         contacts.clear();
@@ -72,61 +129,7 @@ public:
 
         ++frameId;
         pruneContactCache();
-        
-        const float maxVelocity = 999.0f;
-        const float maxAngularVelocity = 999.0f;
-        for (RigidBody* body: bodies) {
-            if (body->isStatic) continue;
-            if (body->sleeping) continue;
-            
-            float speedSq = body->velocity.x * body->velocity.x + body->velocity.y * body->velocity.y + body->velocity.z * body->velocity.z;
-            if (speedSq > maxVelocity * maxVelocity) {
-                float speed = sqrtf(speedSq);
-                body->velocity = body->velocity * (maxVelocity / speed);
-            }
-            
-            float angSpeedSq = body->angularVelocity.x * body->angularVelocity.x + body->angularVelocity.y * body->angularVelocity.y + body->angularVelocity.z * body->angularVelocity.z;
-            if (angSpeedSq > maxAngularVelocity * maxAngularVelocity) {
-                float angSpeed = sqrtf(angSpeedSq);
-                body->angularVelocity = body->angularVelocity * (maxAngularVelocity / angSpeed);
-            }
-
-            float lin = expf(-linearDampingPerSecond * deltaTime);
-            float ang = expf(-angularDampingPerSecond * deltaTime);
-            body->velocity = body->velocity * lin;
-            body->angularVelocity = body->angularVelocity * ang;
-        }
-
-        const float sleepLinear = 0.02f;
-        const float sleepAngular = 0.01f;
-        const float sleepTime = 0.4f;
-        for (RigidBody* body: bodies) {
-            if (body->isStatic) continue;
-
-            if (body->sleeping) {
-                body->sleepTimer = sleepTime;
-                continue;
-            }
-
-            float v2 = body->velocity.x * body->velocity.x + body->velocity.y * body->velocity.y + body->velocity.z * body->velocity.z;
-            float w2 = body->angularVelocity.x * body->angularVelocity.x + body->angularVelocity.y * body->angularVelocity.y + body->angularVelocity.z * body->angularVelocity.z;
-
-            if (body->hadContactThisStep && v2 < sleepLinear * sleepLinear && w2 < sleepAngular * sleepAngular) {
-                body->sleepTimer += deltaTime;
-                if (body->sleepTimer >= sleepTime) {
-                    body->sleeping = true;
-                    body->velocity = {0.0f, 0.0f, 0.0f};
-                    body->angularVelocity = {0.0f, 0.0f, 0.0f};
-                }
-            } else {
-                body->sleepTimer = 0.0f;
-            }
-        }
     }
-
-private:
-    std::vector<RigidBody*> bodies;
-    float currentDt = 1.0f / 60.0f;
 
     int solverIterations = 64;
     uint32_t frameId = 1;
