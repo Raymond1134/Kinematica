@@ -3,6 +3,7 @@
 #include "physics/Spring.h"
 #include "render/Renderer.h"
 #include <chrono>
+#include <vector>
 #include <raylib.h>
 #include <list>
 #include <vector>
@@ -15,6 +16,9 @@ static float getDeltaTime() {
     return diff.count();
 }
 
+#include "physics/collision/GJK.h"
+#include <iostream>
+
 int main() {
     const float FIXED_DT = 1.0f / 60.0f;
     float accumulator = 0.0f;
@@ -26,7 +30,6 @@ int main() {
     Renderer renderer;
     if (!renderer.init(1280, 720, "Kinematica Sandbox")) return -1;
 
-    // --- Simple 3-sphere spring demo ---
     RigidBody s1;
     s1.position = {0.0f, 5.0f, 0.0f};
     s1.mass = 1.0f;
@@ -129,6 +132,28 @@ int main() {
             newCapsule.restitution = 0.22f;
             newCapsule.collider = Collider::createCapsule(0.3f, 0.5f);
             dynamicBodies.push_back(newCapsule);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+
+        if (IsKeyPressed(KEY_FOUR)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            std::vector<Vec3> verts = {
+                {0.0f, 0.3f, 0.0f},
+                {0.3f, -0.3f, 0.3f},
+                {-0.3f, -0.3f, 0.3f},
+                {0.0f, -0.3f, -0.3f}
+            };
+            RigidBody newConvex;
+            newConvex.position = camPos + camFwd * 2.0f;
+            newConvex.velocity = camFwd * 10.0f;
+            newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
+            newConvex.orientation = Quat::identity();
+            newConvex.mass = 1.0f;
+            newConvex.friction = 0.35f;
+            newConvex.restitution = 0.15f;
+            newConvex.collider = Collider::createConvex(verts);
+            dynamicBodies.push_back(newConvex);
             physicsWorld.addRigidBody(&dynamicBodies.back());
         }
 

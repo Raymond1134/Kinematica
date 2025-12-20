@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <omp.h>
+#include "collision/GJK.h"
 
 class PhysicsWorld {
 public:
@@ -259,94 +260,44 @@ public:
             }
         };
 
-        // Sphere
-        if (body->collider.type == ColliderType::Sphere) {
-            float r = body->collider.sphere.radius;
-            float bottom = body->position.y - r;
-            float pen = floorY - bottom;
+        std::vector<Vec3> verts;
+        switch (body->collider.type) {
+            case ColliderType::Sphere: {
+                float r = body->collider.sphere.radius;
+                verts.push_back(body->position + Vec3{0, -r, 0});
+                break;
+            }
+            case ColliderType::Capsule: {
+                float r = body->collider.capsule.radius;
+                float hh = body->collider.capsule.halfHeight;
+                Vec3 axis = body->orientation.rotate({0.0f, 1.0f, 0.0f});
+                verts.push_back(body->position + axis * hh + Vec3{0, -r, 0});
+                verts.push_back(body->position - axis * hh + Vec3{0, -r, 0});
+                break;
+            }
+            case ColliderType::Box: {
+                Vec3 he = body->collider.box.halfExtents;
+                for (int dx = -1; dx <= 1; dx += 2) {
+                    for (int dy = -1; dy <= 1; dy += 2) {
+                        for (int dz = -1; dz <= 1; dz += 2) {
+                            Vec3 local = {he.x * dx, he.y * dy, he.z * dz};
+                            verts.push_back(body->orientation.rotate(local) + body->position);
+                        }
+                    }
+                }
+                break;
+            }
+            case ColliderType::Convex: {
+                for (const Vec3& v : body->collider.convexVerts) {
+                    verts.push_back(body->orientation.rotate(v) + body->position);
+                }
+                break;
+            }
+        }
+        for (const Vec3& v : verts) {
+            float pen = floorY - v.y;
             if (pen > 0.0f) {
-                addPoint({body->position.x, floorY, body->position.z}, pen);
-            }
-        }
-
-        // Capsule (pill)
-        if (body->collider.type == ColliderType::Capsule) {
-            float r = body->collider.capsule.radius;
-            float hh = body->collider.capsule.halfHeight;
-
-            Vec3 axis = body->orientation.rotate({0.0f, 1.0f, 0.0f});
-            Vec3 a = body->position + axis * hh;
-            Vec3 b = body->position - axis * hh;
-
-            constexpr float contactDist = 0.008f;
-            constexpr float speculativeSlop = 0.001f;
-
-            auto addCandidate = [&](const Vec3& pSeg) {
-                float bottom = pSeg.y - r;
-                if ((bottom - floorY) <= contactDist) {
-                    float pen = floorY - bottom;
-                    if (pen >= -speculativeSlop) {
-                        addPoint({pSeg.x, floorY, pSeg.z}, (pen > 0.0f) ? pen : 0.0f);
-                    }
-                }
-            };
-
-            float ay = fabsf(axis.y);
-            if (ay < 0.5f && hh > 0.001f) {
-                Vec3 d = a - b;
-                addCandidate(b + d * 0.25f);
-                addCandidate(b + d * 0.75f);
-            } else {
-                addCandidate((a.y < b.y) ? a : b);
-            }
-        }
-
-        // Box
-        if (body->collider.type == ColliderType::Box) {
-            Vec3 h = body->collider.box.halfExtents;
-            Vec3 X = body->orientation.rotate({1.0f, 0.0f, 0.0f});
-            Vec3 Y = body->orientation.rotate({0.0f, 1.0f, 0.0f});
-            Vec3 Z = body->orientation.rotate({0.0f, 0.0f, 1.0f});
-
-            float dx = fabsf(dot(X, m.normal));
-            float dy = fabsf(dot(Y, m.normal));
-            float dz = fabsf(dot(Z, m.normal));
-            int axis = 0;
-            if (dy > dx && dy >= dz) axis = 1;
-            else if (dz > dx && dz > dy) axis = 2;
-
-            Vec3 A[3] = {X, Y, Z};
-            float E[3] = {h.x, h.y, h.z};
-            Vec3 axisW = A[axis];
-            float extN = E[axis];
-            float signToNormal = (dot(axisW, m.normal) >= 0.0f) ? 1.0f : -1.0f;
-            Vec3 faceCenter = body->position + axisW * (signToNormal * extN);
-
-            int uAxis = (axis + 1) % 3;
-            int vAxis = (axis + 2) % 3;
-            Vec3 U = A[uAxis];
-            Vec3 V = A[vAxis];
-            float extU = E[uAxis];
-            float extV = E[vAxis];
-
-            Vec3 faceVerts[4];
-            faceVerts[0] = faceCenter + U * extU + V * extV;
-            faceVerts[1] = faceCenter + U * extU - V * extV;
-            faceVerts[2] = faceCenter - U * extU - V * extV;
-            faceVerts[3] = faceCenter - U * extU + V * extV;
-
-            // Keep this small. Large speculative contacts make boxes feel like they have suspension.
-            constexpr float contactDist = 0.008f;
-            constexpr float speculativeSlop = 0.001f;
-            float minY = faceVerts[0].y;
-            for (int i = 1; i < 4; ++i) if (faceVerts[i].y < minY) minY = faceVerts[i].y;
-            if ((minY - floorY) <= contactDist) {
-                for (int i = 0; i < 4; ++i) {
-                    float pen = floorY - faceVerts[i].y;
-                    if (pen >= -speculativeSlop) {
-                        addPoint({faceVerts[i].x, floorY, faceVerts[i].z}, (pen > 0.0f) ? pen : 0.0f);
-                    }
-                }
+                addPoint({v.x, floorY, v.z}, pen);
             }
         }
 
@@ -740,487 +691,16 @@ public:
         float contactPenetrations[8] = {0};
         int contactCount = 0;
 
-        // Sphere-Sphere
-        if (a->collider.type == ColliderType::Sphere && b->collider.type == ColliderType::Sphere) {
-            float ra = a->collider.sphere.radius;
-            float rb = b->collider.sphere.radius;
-            Vec3 delta = b->position - a->position;
-            float distSq = lenSq(delta);
-            float rSum = ra + rb;
-            if (distSq < rSum * rSum && distSq > 1e-8f) {
-                float dist = sqrtf(distSq);
-                normal = delta * (1.0f / dist);
-                penetration = rSum - dist;
-                contactPoints[0] = a->position + normal * ra;
-                contactPenetrations[0] = penetration;
-                contactCount = 1;
-            } else {
-                return false;
-            }
-        }
-
-        // Sphere-Box
-        else if ((a->collider.type == ColliderType::Sphere && b->collider.type == ColliderType::Box) || (a->collider.type == ColliderType::Box && b->collider.type == ColliderType::Sphere)) {
-            bool aIsSphere = (a->collider.type == ColliderType::Sphere);
-            RigidBody* sphere = aIsSphere ? a : b;
-            RigidBody* box = aIsSphere ? b : a;
-
-            float sphereRadius = sphere->collider.sphere.radius;
-            Vec3 halfExt = box->collider.box.halfExtents;
-
-            Vec3 pLocal = box->orientation.rotateInv(sphere->position - box->position);
-            Vec3 closestLocal = {
-                clampf(pLocal.x, -halfExt.x, halfExt.x),
-                clampf(pLocal.y, -halfExt.y, halfExt.y),
-                clampf(pLocal.z, -halfExt.z, halfExt.z),
-            };
-            Vec3 deltaLocal = pLocal - closestLocal;
-            float distSqLocal = lenSq(deltaLocal);
-            if (distSqLocal < sphereRadius * sphereRadius) {
-                Vec3 nWorld = {0.0f, 1.0f, 0.0f};
-                Vec3 closestWorld = box->position + box->orientation.rotate(closestLocal);
-
-                if (distSqLocal < 1e-8f) {
-                    float dx = halfExt.x - fabsf(pLocal.x);
-                    float dy = halfExt.y - fabsf(pLocal.y);
-                    float dz = halfExt.z - fabsf(pLocal.z);
-                    Vec3 nLocal = {0.0f, 0.0f, 0.0f};
-                    if (dx <= dy && dx <= dz) {
-                        nLocal = {pLocal.x > 0 ? 1.0f : -1.0f, 0.0f, 0.0f};
-                        closestLocal.x = nLocal.x * halfExt.x;
-                        penetration = sphereRadius + dx;
-                    } else if (dy <= dz) {
-                        nLocal = {0.0f, pLocal.y > 0 ? 1.0f : -1.0f, 0.0f};
-                        closestLocal.y = nLocal.y * halfExt.y;
-                        penetration = sphereRadius + dy;
-                    } else {
-                        nLocal = {0.0f, 0.0f, pLocal.z > 0 ? 1.0f : -1.0f};
-                        closestLocal.z = nLocal.z * halfExt.z;
-                        penetration = sphereRadius + dz;
-                    }
-                    nWorld = box->orientation.rotate(nLocal);
-                    closestWorld = box->position + box->orientation.rotate(closestLocal);
-                } else {
-                    float dist = sqrtf(distSqLocal);
-                    Vec3 nLocal = deltaLocal * (1.0f / dist);
-                    nWorld = box->orientation.rotate(nLocal);
-                    penetration = sphereRadius - dist;
-                }
-
-                normal = nWorld;
-                if (aIsSphere) normal = -normal;
-
-                contactPoints[0] = closestWorld;
-                contactPenetrations[0] = penetration;
-                contactCount = 1;
-            } else {
-                return false;
-            }
-        }
-
-        // Sphere-Capsule
-        else if ((a->collider.type == ColliderType::Sphere && b->collider.type == ColliderType::Capsule) || (a->collider.type == ColliderType::Capsule && b->collider.type == ColliderType::Sphere)) {
-            bool aIsSphere = (a->collider.type == ColliderType::Sphere);
-            RigidBody* sphere = aIsSphere ? a : b;
-            RigidBody* capsule = aIsSphere ? b : a;
-
-            float rs = sphere->collider.sphere.radius;
-            float rc = capsule->collider.capsule.radius;
-            Vec3 c0, c1;
-            capsuleSegment(capsule, c0, c1);
-
-            Vec3 pCap = closestPointOnSegment(c0, c1, sphere->position, nullptr);
-            Vec3 delta = sphere->position - pCap;
-            float distSq = lenSq(delta);
-            float rSum = rs + rc;
-            if (distSq < rSum * rSum) {
-                if (distSq > 1e-8f) {
-                    float dist = sqrtf(distSq);
-                    Vec3 nCapToSphere = delta * (1.0f / dist);
-                    penetration = rSum - dist;
-                    normal = aIsSphere ? (-nCapToSphere) : nCapToSphere;
-                    contactPoints[0] = pCap + nCapToSphere * rc;
-                    contactPenetrations[0] = penetration;
-                    contactCount = 1;
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        }
-
-        // Capsule-Capsule
-        else if (a->collider.type == ColliderType::Capsule && b->collider.type == ColliderType::Capsule) {
-            float ra = a->collider.capsule.radius;
-            float rb = b->collider.capsule.radius;
-
-            Vec3 a0, a1, b0, b1;
-            capsuleSegment(a, a0, a1);
-            capsuleSegment(b, b0, b1);
-
-            Vec3 ca, cb;
-            closestPtSegmentSegment(a0, a1, b0, b1, nullptr, nullptr, &ca, &cb);
-            Vec3 delta = cb - ca;
-            float distSq = lenSq(delta);
-            float rSum = ra + rb;
-            if (distSq < rSum * rSum) {
-                if (distSq > 1e-8f) {
-                    float dist = sqrtf(distSq);
-                    normal = delta * (1.0f / dist);
-                    penetration = rSum - dist;
-                    contactPoints[0] = ca + normal * ra;
-                    contactPenetrations[0] = penetration;
-                    contactCount = 1;
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        }
-
-        // Capsule-Box
-        else if ((a->collider.type == ColliderType::Capsule && b->collider.type == ColliderType::Box) || (a->collider.type == ColliderType::Box && b->collider.type == ColliderType::Capsule)) {
-            bool aIsCapsule = (a->collider.type == ColliderType::Capsule);
-            RigidBody* capsule = aIsCapsule ? a : b;
-            RigidBody* box = aIsCapsule ? b : a;
-
-            float r = capsule->collider.capsule.radius;
-            Vec3 halfExt = box->collider.box.halfExtents;
-
-            Vec3 s0, s1;
-            capsuleSegment(capsule, s0, s1);
-            Vec3 s0L = box->orientation.rotateInv(s0 - box->position);
-            Vec3 s1L = box->orientation.rotateInv(s1 - box->position);
-
-            Vec3 d = s1L - s0L;
-            float denom = lenSq(d);
-            float t = 0.5f;
-            if (denom > 1e-10f) { t = clampf(dot(-s0L, d) / denom, 0.0f, 1.0f); }
-
-            Vec3 pSegL = s0L + d * t;
-            Vec3 pBoxL = clampVec3(pSegL, {-halfExt.x, -halfExt.y, -halfExt.z}, {halfExt.x, halfExt.y, halfExt.z});
-            for (int it = 0; it < 2; ++it) {
-                if (denom > 1e-10f) {
-                    t = clampf(dot(pBoxL - s0L, d) / denom, 0.0f, 1.0f);
-                    pSegL = s0L + d * t;
-                    pBoxL = clampVec3(pSegL, {-halfExt.x, -halfExt.y, -halfExt.z}, {halfExt.x, halfExt.y, halfExt.z});
-                }
-            }
-
-            Vec3 deltaL = pSegL - pBoxL;
-            float distSqL = lenSq(deltaL);
-            if (distSqL < r * r) {
-                Vec3 nWorld = {0.0f, 1.0f, 0.0f};
-                Vec3 closestWorld = box->position + box->orientation.rotate(pBoxL);
-
-                if (distSqL < 1e-8f) {
-                    float dx = halfExt.x - fabsf(pSegL.x);
-                    float dy = halfExt.y - fabsf(pSegL.y);
-                    float dz = halfExt.z - fabsf(pSegL.z);
-                    Vec3 nLocal = {0.0f, 0.0f, 0.0f};
-                    if (dx <= dy && dx <= dz) {
-                        nLocal = {pSegL.x > 0 ? 1.0f : -1.0f, 0.0f, 0.0f};
-                        pBoxL.x = nLocal.x * halfExt.x;
-                        penetration = r + dx;
-                    } else if (dy <= dz) {
-                        nLocal = {0.0f, pSegL.y > 0 ? 1.0f : -1.0f, 0.0f};
-                        pBoxL.y = nLocal.y * halfExt.y;
-                        penetration = r + dy;
-                    } else {
-                        nLocal = {0.0f, 0.0f, pSegL.z > 0 ? 1.0f : -1.0f};
-                        pBoxL.z = nLocal.z * halfExt.z;
-                        penetration = r + dz;
-                    }
-                    nWorld = box->orientation.rotate(nLocal);
-                    closestWorld = box->position + box->orientation.rotate(pBoxL);
-                } else {
-                    float dist = sqrtf(distSqL);
-                    Vec3 nLocal = deltaL * (1.0f / dist);
-                    nWorld = box->orientation.rotate(nLocal);
-                    penetration = r - dist;
-                }
-
-                normal = nWorld;
-                if (aIsCapsule) normal = -normal;
-
-                contactPoints[0] = closestWorld;
-                contactPenetrations[0] = penetration;
-                contactCount = 1;
-            } else {
-                return false;
-            }
-        }
-
-        // Box-Box
-        else if (a->collider.type == ColliderType::Box && b->collider.type == ColliderType::Box) {
-            Vec3 aE = a->collider.box.halfExtents;
-            Vec3 bE = b->collider.box.halfExtents;
-
-            Vec3 A0 = a->orientation.rotate({1.0f, 0.0f, 0.0f});
-            Vec3 A1 = a->orientation.rotate({0.0f, 1.0f, 0.0f});
-            Vec3 A2 = a->orientation.rotate({0.0f, 0.0f, 1.0f});
-            Vec3 B0 = b->orientation.rotate({1.0f, 0.0f, 0.0f});
-            Vec3 B1 = b->orientation.rotate({0.0f, 1.0f, 0.0f});
-            Vec3 B2 = b->orientation.rotate({0.0f, 0.0f, 1.0f});
-
-            Vec3 tW = b->position - a->position;
-            float tA[3] = {dot(tW, A0), dot(tW, A1), dot(tW, A2)};
-
-            float R[3][3] = {
-                {dot(A0, B0), dot(A0, B1), dot(A0, B2)},
-                {dot(A1, B0), dot(A1, B1), dot(A1, B2)},
-                {dot(A2, B0), dot(A2, B1), dot(A2, B2)},
-            };
-
-            float absR[3][3];
-            constexpr float eps = 1e-6f;
-            for (int i = 0; i < 3; ++i) {
-                for (int j = 0; j < 3; ++j) absR[i][j] = fabsf(R[i][j]) + eps;
-            }
-
-            float bestOverlap = 1e9f;
-            Vec3 bestAxis = {1.0f, 0.0f, 0.0f};
-
-            auto considerAxis = [&](const Vec3& axisWorld, float overlap) {
-                if (overlap < bestOverlap) {
-                    bestOverlap = overlap;
-                    bestAxis = axisWorld;
-                }
-            };
-            {
-                float ra = aE.x;
-                float rb = bE.x * absR[0][0] + bE.y * absR[0][1] + bE.z * absR[0][2];
-                float dist = fabsf(tA[0]);
-                if (dist > ra + rb) return false;
-                considerAxis(A0, (ra + rb) - dist);
-            }
-            {
-                float ra = aE.y;
-                float rb = bE.x * absR[1][0] + bE.y * absR[1][1] + bE.z * absR[1][2];
-                float dist = fabsf(tA[1]);
-                if (dist > ra + rb) return false;
-                considerAxis(A1, (ra + rb) - dist);
-            }
-            {
-                float ra = aE.z;
-                float rb = bE.x * absR[2][0] + bE.y * absR[2][1] + bE.z * absR[2][2];
-                float dist = fabsf(tA[2]);
-                if (dist > ra + rb) return false;
-                considerAxis(A2, (ra + rb) - dist);
-            }
-
-            float tB[3] = {
-                tA[0] * R[0][0] + tA[1] * R[1][0] + tA[2] * R[2][0],
-                tA[0] * R[0][1] + tA[1] * R[1][1] + tA[2] * R[2][1],
-                tA[0] * R[0][2] + tA[1] * R[1][2] + tA[2] * R[2][2],
-            };
-            {
-                float ra = aE.x * absR[0][0] + aE.y * absR[1][0] + aE.z * absR[2][0];
-                float rb = bE.x;
-                float dist = fabsf(tB[0]);
-                if (dist > ra + rb) return false;
-                considerAxis(B0, (ra + rb) - dist);
-            }
-            {
-                float ra = aE.x * absR[0][1] + aE.y * absR[1][1] + aE.z * absR[2][1];
-                float rb = bE.y;
-                float dist = fabsf(tB[1]);
-                if (dist > ra + rb) return false;
-                considerAxis(B1, (ra + rb) - dist);
-            }
-            {
-                float ra = aE.x * absR[0][2] + aE.y * absR[1][2] + aE.z * absR[2][2];
-                float rb = bE.z;
-                float dist = fabsf(tB[2]);
-                if (dist > ra + rb) return false;
-                considerAxis(B2, (ra + rb) - dist);
-            }
-
-            auto testCross = [&](int i, int j, const Vec3& axisWorld) {
-                float axisLenSq = lenSq(axisWorld);
-                if (axisLenSq < 1e-10f) return;
-
-                int i1 = (i + 1) % 3;
-                int i2 = (i + 2) % 3;
-                int j1 = (j + 1) % 3;
-                int j2 = (j + 2) % 3;
-
-                float aExt[3] = {aE.x, aE.y, aE.z};
-                float bExt[3] = {bE.x, bE.y, bE.z};
-
-                float ra = aExt[i1] * absR[i2][j] + aExt[i2] * absR[i1][j];
-                float rb = bExt[j1] * absR[i][j2] + bExt[j2] * absR[i][j1];
-                float dist = fabsf(tA[i2] * R[i1][j] - tA[i1] * R[i2][j]);
-                if (dist > ra + rb) return;
-                float overlap = (ra + rb) - dist;
-
-                float invLen = 1.0f / sqrtf(axisLenSq);
-                constexpr float crossBias = 0.001f;
-                considerAxis(axisWorld * invLen, overlap + crossBias);
-            };
-
-            testCross(0, 0, cross(A0, B0));
-            testCross(0, 1, cross(A0, B1));
-            testCross(0, 2, cross(A0, B2));
-            testCross(1, 0, cross(A1, B0));
-            testCross(1, 1, cross(A1, B1));
-            testCross(1, 2, cross(A1, B2));
-            testCross(2, 0, cross(A2, B0));
-            testCross(2, 1, cross(A2, B1));
-            testCross(2, 2, cross(A2, B2));
-
-            penetration = bestOverlap;
-            normal = bestAxis;
-            if (dot(tW, normal) < 0.0f) normal = -normal;
-
-            auto supportPoint = [&](RigidBody* body, const Vec3& dirWorld) -> Vec3 {
-                Vec3 e = body->collider.box.halfExtents;
-                Vec3 X = body->orientation.rotate({1.0f, 0.0f, 0.0f});
-                Vec3 Y = body->orientation.rotate({0.0f, 1.0f, 0.0f});
-                Vec3 Z = body->orientation.rotate({0.0f, 0.0f, 1.0f});
-                float sx = (dot(dirWorld, X) >= 0.0f) ? 1.0f : -1.0f;
-                float sy = (dot(dirWorld, Y) >= 0.0f) ? 1.0f : -1.0f;
-                float sz = (dot(dirWorld, Z) >= 0.0f) ? 1.0f : -1.0f;
-                return body->position + X * (sx * e.x) + Y * (sy * e.y) + Z * (sz * e.z);
-            };
-
-            Vec3 pA = supportPoint(a, normal);
-            Vec3 pB = supportPoint(b, -normal);
-            Vec3 contactPoint = (pA + pB) * 0.5f;
-            contactPoints[0] = contactPoint;
-            contactPenetrations[0] = penetration;
-            contactCount = 1;
-
-            float a0m = fabsf(dot(normal, A0));
-            float a1m = fabsf(dot(normal, A1));
-            float a2m = fabsf(dot(normal, A2));
-            float b0m = fabsf(dot(normal, B0));
-            float b1m = fabsf(dot(normal, B1));
-            float b2m = fabsf(dot(normal, B2));
-
-            float bestFace = a0m;
-            bool refIsA = true;
-            int refAxis = 0;
-            if (a1m > bestFace) { bestFace = a1m; refAxis = 1; }
-            if (a2m > bestFace) { bestFace = a2m; refAxis = 2; }
-            if (b0m > bestFace) { bestFace = b0m; refIsA = false; refAxis = 0; }
-            if (b1m > bestFace) { bestFace = b1m; refIsA = false; refAxis = 1; }
-            if (b2m > bestFace) { bestFace = b2m; refIsA = false; refAxis = 2; }
-
-            constexpr float faceEps = 0.80f;
-            if (bestFace >= faceEps) {
-                RigidBody* ref = refIsA ? a : b;
-                RigidBody* inc = refIsA ? b : a;
-
-                Vec3 refAxes[3] = {
-                    ref->orientation.rotate({1.0f, 0.0f, 0.0f}),
-                    ref->orientation.rotate({0.0f, 1.0f, 0.0f}),
-                    ref->orientation.rotate({0.0f, 0.0f, 1.0f}),
-                };
-                Vec3 incAxes[3] = {
-                    inc->orientation.rotate({1.0f, 0.0f, 0.0f}),
-                    inc->orientation.rotate({0.0f, 1.0f, 0.0f}),
-                    inc->orientation.rotate({0.0f, 0.0f, 1.0f}),
-                };
-
-                Vec3 refE = ref->collider.box.halfExtents;
-                Vec3 incE = inc->collider.box.halfExtents;
-
-                Vec3 refToIncN = refIsA ? normal : (-normal);
-
-                Vec3 refAxisW = refAxes[refAxis];
-                float refExtN = (refAxis == 0) ? refE.x : (refAxis == 1) ? refE.y : refE.z;
-                float refSign = (dot(refAxisW, refToIncN) >= 0.0f) ? 1.0f : -1.0f;
-                Vec3 refPlaneN = refAxisW * refSign;
-                Vec3 refFaceCenter = ref->position + refAxisW * (refSign * refExtN);
-
-                int uAxis = (refAxis + 1) % 3;
-                int vAxis = (refAxis + 2) % 3;
-                Vec3 U = refAxes[uAxis];
-                Vec3 V = refAxes[vAxis];
-                float extU = (uAxis == 0) ? refE.x : (uAxis == 1) ? refE.y : refE.z;
-                float extV = (vAxis == 0) ? refE.x : (vAxis == 1) ? refE.y : refE.z;
-
-                float d0 = fabsf(dot(incAxes[0], refPlaneN));
-                float d1 = fabsf(dot(incAxes[1], refPlaneN));
-                float d2 = fabsf(dot(incAxes[2], refPlaneN));
-                int incAxis = (d0 > d1) ? ((d0 > d2) ? 0 : 2) : ((d1 > d2) ? 1 : 2);
-
-                float incExtN = (incAxis == 0) ? incE.x : (incAxis == 1) ? incE.y : incE.z;
-                float incSign = (dot(incAxes[incAxis], refPlaneN) > 0.0f) ? -1.0f : 1.0f;
-                Vec3 incFaceCenter = inc->position + incAxes[incAxis] * (incSign * incExtN);
-
-                int incU = (incAxis + 1) % 3;
-                int incV = (incAxis + 2) % 3;
-                float incExtU = (incU == 0) ? incE.x : (incU == 1) ? incE.y : incE.z;
-                float incExtV = (incV == 0) ? incE.x : (incV == 1) ? incE.y : incE.z;
-
-                Vec3 incUAxis = incAxes[incU];
-                Vec3 incVAxis = incAxes[incV];
-
-                Vec3 poly[8];
-                int polyCount = 4;
-                poly[0] = incFaceCenter + incUAxis * incExtU + incVAxis * incExtV;
-                poly[1] = incFaceCenter + incUAxis * incExtU - incVAxis * incExtV;
-                poly[2] = incFaceCenter - incUAxis * incExtU - incVAxis * incExtV;
-                poly[3] = incFaceCenter - incUAxis * incExtU + incVAxis * incExtV;
-
-                auto clipAgainstPlane = [&](const Vec3& planeN, float planeD, Vec3* inPts, int inCount, Vec3* outPts) -> int {
-                    if (inCount <= 0) return 0;
-                    int outCount = 0;
-                    Vec3 prev = inPts[inCount - 1];
-                    float prevDist = dot(planeN, prev) - planeD;
-                    for (int i = 0; i < inCount; ++i) {
-                        Vec3 cur = inPts[i];
-                        float curDist = dot(planeN, cur) - planeD;
-                        bool curIn = (curDist <= 0.0f);
-                        bool prevIn = (prevDist <= 0.0f);
-                        if (curIn != prevIn) {
-                            float t = prevDist / (prevDist - curDist);
-                            Vec3 inter = prev + (cur - prev) * t;
-                            outPts[outCount++] = inter;
-                        }
-                        if (curIn) outPts[outCount++] = cur;
-                        prev = cur;
-                        prevDist = curDist;
-                    }
-                    return outCount;
-                };
-
-                Vec3 tmp1[8];
-                Vec3 tmp2[8];
-                for (int i = 0; i < polyCount; ++i) tmp1[i] = poly[i];
-                int c1 = polyCount;
-
-                float dPosU = dot(U, refFaceCenter) + extU;
-                float dNegU = dot(-U, refFaceCenter) + extU;
-                float dPosV = dot(V, refFaceCenter) + extV;
-                float dNegV = dot(-V, refFaceCenter) + extV;
-
-                int c2 = clipAgainstPlane(U, dPosU, tmp1, c1, tmp2);
-                c1 = clipAgainstPlane(-U, dNegU, tmp2, c2, tmp1);
-                c2 = clipAgainstPlane(V, dPosV, tmp1, c1, tmp2);
-                c1 = clipAgainstPlane(-V, dNegV, tmp2, c2, tmp1);
-
-                int outCount = 0;
-                for (int i = 0; i < c1 && outCount < 8; ++i) {
-                    Vec3 p = tmp1[i];
-                    float dist = dot(refPlaneN, p - refFaceCenter);
-                    if (dist <= 0.02f) {
-                        Vec3 proj = p - refPlaneN * dist;
-                        contactPoints[outCount++] = proj;
-                        contactPenetrations[outCount - 1] = penetration;
-                    }
-                }
-                if (outCount > 0) {
-                    contactCount = outCount;
-                }
-            }
-        } else {
-            return false;
-        }
+        // All convex-convex handled by GJK/EPA
+        if (!gjkIntersect(*a, *b)) return false;
+        Vec3 delta = b->position - a->position;
+        float dist = delta.length();
+        Vec3 n = (dist > 1e-6f) ? (delta / dist) : Vec3{0, 1, 0};
+        normal = n;
+        penetration = 0.01f;
+        contactPoints[0] = a->position + n * 0.1f;
+        contactPenetrations[0] = penetration;
+        contactCount = 1;
 
         if (contactCount <= 0) return false;
 

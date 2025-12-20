@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../math/Vec3.h"
+#include <vector>
+#include <raylib.h>
 
 struct RigidBody;
 
@@ -9,6 +11,7 @@ public:
     bool init(int width, int height, const char* title);
     void beginFrame();
     void drawRigidBody(const RigidBody* body, float size = 0.5f);
+    void drawConvex(const std::vector<Vec3>& verts, Color color) const;
     void endFrame();
     void shutdown();
     

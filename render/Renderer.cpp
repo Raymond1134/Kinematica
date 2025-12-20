@@ -2,7 +2,7 @@
 #include "../physics/RigidBody.h"
 #include "../math/Vec3.h"
 #include "../math/Quat.h"
-
+#include <vector>
 #include <raylib.h>
 #include <rlgl.h>
 #include <cmath>
@@ -95,9 +95,24 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
             DrawLine3D({0, -halfHeight, 0}, {0, halfHeight, 0}, Fade(RED, 0.7f));
             break;
         }
+        case ColliderType::Convex: {
+            drawConvex(body->collider.convexVerts, color);
+            break;
+        }
     }
-    
-    rlPopMatrix();
+        rlPopMatrix();
+    }
+
+void Renderer::drawConvex(const std::vector<Vec3>& verts, Color color) const {
+    for (const Vec3& v : verts) {
+        DrawSphere({v.x, v.y, v.z}, 0.05f, color);
+    }
+    // Draw all edges (brute force for now)
+    for (size_t i = 0; i < verts.size(); ++i) {
+        for (size_t j = i + 1; j < verts.size(); ++j) {
+            DrawLine3D({verts[i].x, verts[i].y, verts[i].z}, {verts[j].x, verts[j].y, verts[j].z}, Fade(BLACK, 0.5f));
+        }
+    }
 }
 
 void Renderer::endFrame() {
