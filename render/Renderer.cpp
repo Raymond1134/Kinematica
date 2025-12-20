@@ -96,7 +96,7 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
             break;
         }
         case ColliderType::Convex: {
-            drawConvex(body->collider.convexVerts, color);
+            drawConvex(body->collider.polyhedron.verts, color);
             break;
         }
     }
@@ -104,15 +104,72 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
     }
 
 void Renderer::drawConvex(const std::vector<Vec3>& verts, Color color) const {
-    for (const Vec3& v : verts) {
-        DrawSphere({v.x, v.y, v.z}, 0.05f, color);
-    }
-    // Draw all edges (brute force for now)
+    if (verts.size() < 4) return;
+    Color fillColor = color;
+    Color edgeColor = BLACK;
+    struct Face { int a, b, c; };
+    std::vector<Face> faces;
+    // Naive convex hull triangulation
     for (size_t i = 0; i < verts.size(); ++i) {
-        for (size_t j = i + 1; j < verts.size(); ++j) {
-            DrawLine3D({verts[i].x, verts[i].y, verts[i].z}, {verts[j].x, verts[j].y, verts[j].z}, Fade(BLACK, 0.5f));
+        for (size_t j = 0; j < verts.size(); ++j) {
+            if (j == i) continue;
+            for (size_t k = 0; k < verts.size(); ++k) {
+                if (k == i || k == j) continue;
+                Vec3 v0 = verts[i];
+                Vec3 v1 = verts[j];
+                Vec3 v2 = verts[k];
+                Vec3 normal = Vec3::cross(v1 - v0, v2 - v0);
+                if (normal.x == 0 && normal.y == 0 && normal.z == 0) continue;
+                bool valid = true;
+                float sign = 0.0f;
+                for (size_t m = 0; m < verts.size(); ++m) {
+                    if (m == i || m == j || m == k) continue;
+                    float d = Vec3::dot(normal, verts[m] - v0);
+                    if (sign == 0.0f && fabsf(d) > 1e-6f) sign = d;
+                    if (d * sign < -1e-6f) { valid = false; break; }
+                }
+                if (valid) {
+                    bool duplicate = false;
+                    for (const auto& f : faces) {
+                        if ((f.a == i && f.b == j && f.c == k) ||
+                            (f.a == i && f.b == k && f.c == j) ||
+                            (f.a == j && f.b == i && f.c == k) ||
+                            (f.a == j && f.b == k && f.c == i) ||
+                            (f.a == k && f.b == i && f.c == j) ||
+                            (f.a == k && f.b == j && f.c == i)) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (!duplicate) faces.push_back({(int)i, (int)j, (int)k});
+                }
+            }
         }
     }
+    rlPushMatrix();
+    rlBegin(RL_TRIANGLES);
+    rlColor4ub(fillColor.r, fillColor.g, fillColor.b, fillColor.a);
+    for (const auto& f : faces) {
+        rlVertex3f(verts[f.a].x, verts[f.a].y, verts[f.a].z);
+        rlVertex3f(verts[f.b].x, verts[f.b].y, verts[f.b].z);
+        rlVertex3f(verts[f.c].x, verts[f.c].y, verts[f.c].z);
+        rlVertex3f(verts[f.a].x, verts[f.a].y, verts[f.a].z);
+        rlVertex3f(verts[f.c].x, verts[f.c].y, verts[f.c].z);
+        rlVertex3f(verts[f.b].x, verts[f.b].y, verts[f.b].z);
+    }
+    rlEnd();
+    rlBegin(RL_LINES);
+    rlColor4ub(edgeColor.r, edgeColor.g, edgeColor.b, edgeColor.a);
+    for (const auto& f : faces) {
+        rlVertex3f(verts[f.a].x, verts[f.a].y, verts[f.a].z);
+        rlVertex3f(verts[f.b].x, verts[f.b].y, verts[f.b].z);
+        rlVertex3f(verts[f.b].x, verts[f.b].y, verts[f.b].z);
+        rlVertex3f(verts[f.c].x, verts[f.c].y, verts[f.c].z);
+        rlVertex3f(verts[f.c].x, verts[f.c].y, verts[f.c].z);
+        rlVertex3f(verts[f.a].x, verts[f.a].y, verts[f.a].z);
+    }
+    rlEnd();
+    rlPopMatrix();
 }
 
 void Renderer::endFrame() {

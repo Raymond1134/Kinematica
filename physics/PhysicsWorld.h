@@ -288,7 +288,7 @@ public:
                 break;
             }
             case ColliderType::Convex: {
-                for (const Vec3& v : body->collider.convexVerts) {
+                for (const Vec3& v : body->collider.polyhedron.verts) {
                     verts.push_back(body->orientation.rotate(v) + body->position);
                 }
                 break;
