@@ -138,17 +138,151 @@ int main() {
         if (IsKeyPressed(KEY_FOUR)) {
             Vec3 camPos = renderer.getCameraPosition();
             Vec3 camFwd = renderer.getCameraForward();
+            // Tetrahedron (regular)
+            float s = 0.4f;
             std::vector<Vec3> verts = {
-                {0.0f, 0.3f, 0.0f},
-                {0.3f, -0.3f, 0.3f},
-                {-0.3f, -0.3f, 0.3f},
-                {0.0f, -0.3f, -0.3f}
+                {s, s, s},
+                {-s, -s, s},
+                {-s, s, -s},
+                {s, -s, -s}
             };
             RigidBody newConvex;
             newConvex.position = camPos + camFwd * 2.0f;
             newConvex.velocity = camFwd * 10.0f;
             newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
-            newConvex.orientation = Quat::identity();
+            Vec3 up = {0.0f, 1.0f, 0.0f};
+            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.mass = 1.0f;
+            newConvex.friction = 0.35f;
+            newConvex.restitution = 0.15f;
+            newConvex.collider = Collider::createConvex(verts);
+            dynamicBodies.push_back(newConvex);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+        if (IsKeyPressed(KEY_FIVE)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            // Trigonal bipyramid (max separation)
+            float h = 0.4f;
+            float r = 0.3f;
+            std::vector<Vec3> verts = {
+                {0, h, 0},
+                {0, -h, 0},
+                {r, 0, 0},
+                {-r/2, 0, r * sqrtf(3)/2},
+                {-r/2, 0, -r * sqrtf(3)/2}
+            };
+            RigidBody newConvex;
+            newConvex.position = camPos + camFwd * 2.0f;
+            newConvex.velocity = camFwd * 10.0f;
+            newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
+            Vec3 up = {0.0f, 1.0f, 0.0f};
+            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.mass = 1.0f;
+            newConvex.friction = 0.35f;
+            newConvex.restitution = 0.15f;
+            newConvex.collider = Collider::createConvex(verts);
+            dynamicBodies.push_back(newConvex);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+        if (IsKeyPressed(KEY_SIX)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            // Octahedron (regular)
+            float s = 0.4f;
+            std::vector<Vec3> verts = {
+                {s, 0, 0},
+                {-s, 0, 0},
+                {0, s, 0},
+                {0, -s, 0},
+                {0, 0, s},
+                {0, 0, -s}
+            };
+            RigidBody newConvex;
+            newConvex.position = camPos + camFwd * 2.0f;
+            newConvex.velocity = camFwd * 10.0f;
+            newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
+            Vec3 up = {0.0f, 1.0f, 0.0f};
+            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.mass = 1.0f;
+            newConvex.friction = 0.35f;
+            newConvex.restitution = 0.15f;
+            newConvex.collider = Collider::createConvex(verts);
+            dynamicBodies.push_back(newConvex);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+        if (IsKeyPressed(KEY_SEVEN)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            // Pentagonal bipyramid
+            float h = 0.35f;
+            float r = 0.25f;
+            std::vector<Vec3> verts = {
+                {0, h, 0},
+                {0, -h, 0},
+            };
+            for (int i = 0; i < 5; ++i) {
+                float a = i * 2 * 3.14159265f / 5;
+                verts.push_back({r * cosf(a), 0, r * sinf(a)});
+            }
+            RigidBody newConvex;
+            newConvex.position = camPos + camFwd * 2.0f;
+            newConvex.velocity = camFwd * 10.0f;
+            newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
+            Vec3 up = {0.0f, 1.0f, 0.0f};
+            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.mass = 1.0f;
+            newConvex.friction = 0.35f;
+            newConvex.restitution = 0.15f;
+            newConvex.collider = Collider::createConvex(verts);
+            dynamicBodies.push_back(newConvex);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+        if (IsKeyPressed(KEY_EIGHT)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            // Cube corners
+            float s = 0.35f;
+            std::vector<Vec3> verts = {
+                {s, s, s},
+                {s, s, -s},
+                {s, -s, s},
+                {s, -s, -s},
+                {-s, s, s},
+                {-s, s, -s},
+                {-s, -s, s},
+                {-s, -s, -s}
+            };
+            RigidBody newConvex;
+            newConvex.position = camPos + camFwd * 2.0f;
+            newConvex.velocity = camFwd * 10.0f;
+            newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
+            Vec3 up = {0.0f, 1.0f, 0.0f};
+            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.mass = 0.1f;
+            newConvex.friction = 0.35f;
+            newConvex.restitution = 0.0f;
+            newConvex.collider = Collider::createConvex(verts);
+            dynamicBodies.push_back(newConvex);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+        if (IsKeyPressed(KEY_NINE)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            // 9 points on a sphere
+            float r = 0.4f;
+            std::vector<Vec3> verts;
+            for (int i = 0; i < 9; ++i) {
+                float phi = acosf(-1.0f + 2.0f * (i + 1) / 10.0f);
+                float theta = 3.14159265f * (1 + sqrtf(5)) * i;
+                verts.push_back({r * sinf(phi) * cosf(theta), r * sinf(phi) * sinf(theta), r * cosf(phi)});
+            }
+            RigidBody newConvex;
+            newConvex.position = camPos + camFwd * 2.0f;
+            newConvex.velocity = camFwd * 10.0f;
+            newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
+            Vec3 up = {0.0f, 1.0f, 0.0f};
+            newConvex.orientation = Quat::lookRotation(camFwd, up);
             newConvex.mass = 1.0f;
             newConvex.friction = 0.35f;
             newConvex.restitution = 0.15f;

@@ -1,6 +1,10 @@
 #pragma once
 
 #include "../math/Vec3.h"
+#include "shapes/SphereShape.h"
+#include "shapes/BoxShape.h"
+#include "shapes/CapsuleShape.h"
+#include "shapes/PolyhedronShape.h"
 #include "shapes/ConvexShape.h"
 #include <vector>
 #include <algorithm>
@@ -15,51 +19,35 @@ enum class ColliderType {
 struct Collider : public ConvexShape {
     ColliderType type;
 
-    struct SphereData {
-        float radius = 0.5f;
-    } sphere;
-
-    struct BoxData {
-        Vec3 halfExtents = {0.5f, 0.5f, 0.5f};
-    } box;
-
-
-    struct CapsuleData {
-        float radius = 0.5f;
-        float halfHeight = 0.5f;
-    } capsule;
-
-    // Convex polyhedron
-    std::vector<Vec3> convexVerts;
+    SphereShape sphere;
+    BoxShape box;
+    CapsuleShape capsule;
+    PolyhedronShape polyhedron;
 
     Collider() : type(ColliderType::Sphere) {}
 
     static Collider createSphere(float radius) {
         Collider c;
         c.type = ColliderType::Sphere;
-        c.sphere.radius = radius;
+        c.sphere = SphereShape(radius);
         return c;
     }
-
     static Collider createBox(Vec3 halfExtents) {
         Collider c;
         c.type = ColliderType::Box;
-        c.box.halfExtents = halfExtents;
+        c.box = BoxShape(halfExtents);
         return c;
     }
-
     static Collider createCapsule(float radius, float halfHeight) {
         Collider c;
         c.type = ColliderType::Capsule;
-        c.capsule.radius = radius;
-        c.capsule.halfHeight = halfHeight;
+        c.capsule = CapsuleShape(radius, halfHeight);
         return c;
     }
-
     static Collider createConvex(const std::vector<Vec3>& verts) {
         Collider c;
         c.type = ColliderType::Convex;
-        c.convexVerts = verts;
+        c.polyhedron = PolyhedronShape(verts);
         return c;
     }
 
@@ -83,7 +71,7 @@ struct Collider : public ConvexShape {
             case ColliderType::Convex: {
                 float maxDot = -1e30f;
                 Vec3 best = {0,0,0};
-                for (const Vec3& v : convexVerts) {
+                for (const Vec3& v : polyhedron.verts) {
                     float dot = Vec3::dot(v, d);
                     if (dot > maxDot) {
                         maxDot = dot;
