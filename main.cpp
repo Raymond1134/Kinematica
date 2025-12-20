@@ -1,9 +1,11 @@
 #include "physics/PhysicsWorld.h"
 #include "physics/RigidBody.h"
+#include "physics/Spring.h"
 #include "render/Renderer.h"
 #include <chrono>
 #include <raylib.h>
 #include <list>
+#include <vector>
 
 static float getDeltaTime() {
     static auto last = std::chrono::high_resolution_clock::now();
@@ -23,6 +25,40 @@ int main() {
 
     Renderer renderer;
     if (!renderer.init(1280, 720, "Kinematica Sandbox")) return -1;
+
+    // --- Simple 3-sphere spring demo ---
+    RigidBody s1;
+    s1.position = {0.0f, 5.0f, 0.0f};
+    s1.mass = 1.0f;
+    s1.isStatic = false;
+    s1.collider = Collider::createSphere(0.5f);
+    dynamicBodies.push_back(s1);
+    auto it1 = std::prev(dynamicBodies.end());
+    physicsWorld.addRigidBody(&(*it1));
+
+    RigidBody s2;
+    s2.position = {1.5f, 5.0f, 0.0f};
+    s2.mass = 1.0f;
+    s2.isStatic = false;
+    s2.collider = Collider::createSphere(0.5f);
+    dynamicBodies.push_back(s2);
+    auto it2 = std::prev(dynamicBodies.end());
+    physicsWorld.addRigidBody(&(*it2));
+
+    RigidBody s3;
+    s3.position = {3.0f, 5.0f, 0.0f};
+    s3.mass = 1.0f;
+    s3.isStatic = false;
+    s3.collider = Collider::createSphere(0.5f);
+    dynamicBodies.push_back(s3);
+    auto it3 = std::prev(dynamicBodies.end());
+    physicsWorld.addRigidBody(&(*it3));
+
+    float restLength = 1.5f;
+    float stiffness = 10.0f;
+    float damping = 1.0f;
+    physicsWorld.springs.emplace_back(&(*it1), &(*it2), restLength, stiffness, damping);
+    physicsWorld.springs.emplace_back(&(*it2), &(*it3), restLength, stiffness, damping);
 
     SetExitKey(0);
 

@@ -2,6 +2,7 @@
 
 #include "../math/Vec3.h"
 #include "RigidBody.h"
+#include "Spring.h"
 #include <vector>
 #include <cmath>
 #include <unordered_map>
@@ -10,6 +11,7 @@
 class PhysicsWorld {
 public:
     Vec3 gravity = {0.0f, -9.81f, 0.0f};
+    std::vector<Spring> springs;
 
     // Ground plane at y=floorY. This is intentionally a dedicated plane contact.
     float floorY = 0.0f;
@@ -27,6 +29,19 @@ public:
     }
 
     void step(float deltaTime) {
+        for (const Spring& spring : springs) {
+            if (!spring.a || !spring.b) continue;
+            Vec3 delta = spring.b->position - spring.a->position;
+            float dist = delta.length();
+            if (dist < 1e-6f) continue;
+            Vec3 dir = delta / dist;
+            float displacement = spring.restLength - dist; // FIX: invert direction
+            float relVel = Vec3::dot(spring.b->velocity - spring.a->velocity, dir);
+            float forceMag = spring.stiffness * displacement - spring.damping * relVel;
+            Vec3 force = dir * forceMag;
+            if (!spring.a->isStatic && spring.a->mass > 0.0f) spring.a->velocity -= force * (deltaTime / spring.a->mass);
+            if (!spring.b->isStatic && spring.b->mass > 0.0f) spring.b->velocity += force * (deltaTime / spring.b->mass);
+        }
         currentDt = deltaTime;
         for (RigidBody* body: bodies) {
             if (!body) continue;
