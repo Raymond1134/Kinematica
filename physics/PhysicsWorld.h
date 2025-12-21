@@ -262,10 +262,7 @@ public:
                 float maxD = ri + rj + broadphaseMargin;
                 if (d.lengthSq() > maxD * maxD) continue;
 
-                ContactManifold m;
-                if (detectBodyBody(bi, bj, m)) {
-                    out.push_back(m);
-                }
+                appendBodyBodyContacts(bi, bj, out);
             }
         }
     }
@@ -325,6 +322,53 @@ public:
                 }
                 break;
             }
+            case ColliderType::Compound: {
+                if (!body->collider.compound) break;
+                for (const CompoundChild& child : body->collider.compound->children) {
+                    Quat qChildWorld = (body->orientation * child.localOrientation).normalized();
+                    Vec3 pChildWorld = body->orientation.rotate(child.localPosition) + body->position;
+
+                    switch (child.collider.type) {
+                        case ColliderType::Sphere: {
+                            float r = child.collider.sphere.radius;
+                            verts.push_back(pChildWorld + Vec3{0, -r, 0});
+                            break;
+                        }
+                        case ColliderType::Capsule: {
+                            float r = child.collider.capsule.radius;
+                            float hh = child.collider.capsule.halfHeight;
+                            Vec3 axis = qChildWorld.rotate({0.0f, 1.0f, 0.0f});
+                            verts.push_back(pChildWorld + axis * hh + Vec3{0, -r, 0});
+                            verts.push_back(pChildWorld - axis * hh + Vec3{0, -r, 0});
+                            break;
+                        }
+                        case ColliderType::Box: {
+                            Vec3 he = child.collider.box.halfExtents;
+                            for (int dx = -1; dx <= 1; dx += 2) {
+                                for (int dy = -1; dy <= 1; dy += 2) {
+                                    for (int dz = -1; dz <= 1; dz += 2) {
+                                        Vec3 local = {he.x * dx, he.y * dy, he.z * dz};
+                                        verts.push_back(qChildWorld.rotate(local) + pChildWorld);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        case ColliderType::Convex: {
+                            for (const Vec3& v : child.collider.polyhedron.verts) {
+                                verts.push_back(qChildWorld.rotate(v) + pChildWorld);
+                            }
+                            break;
+                        }
+                        case ColliderType::Mesh:
+                        case ColliderType::Compound:
+                            break;
+                    }
+                }
+                break;
+            }
+            case ColliderType::Mesh:
+                break;
         }
         for (const Vec3& v : verts) {
             float pen = floorY - v.y;
@@ -1114,13 +1158,119 @@ public:
         }
     }
 
-    bool detectBodyBody(RigidBody* a, RigidBody* b, ContactManifold& m) {
+    static RigidBody makeChildProxyBody(const RigidBody* parent, const CompoundChild& child) {
+        RigidBody proxy;
+        proxy.position = parent->orientation.rotate(child.localPosition) + parent->position;
+        proxy.orientation = (parent->orientation * child.localOrientation).normalized();
+        proxy.velocity = parent->velocity;
+        proxy.angularVelocity = parent->angularVelocity;
+        proxy.mass = parent->mass;
+        proxy.restitution = parent->restitution;
+        proxy.friction = parent->friction;
+        proxy.collider = child.collider;
+        proxy.isStatic = parent->isStatic;
+        proxy.sleeping = false;
+        return proxy;
+    }
+
+    static void orientNormalForPair(ContactManifold& m, const RigidBody* a, const RigidBody* b) {
+        Vec3 ab = b->position - a->position;
+        if (Vec3::dot(m.normal, ab) < 0.0f) m.normal = -m.normal;
+    }
+
+    void appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out) {
+        if (!a || !b) return;
+        if (a->isStatic && b->isStatic) return;
+        if (a->sleeping && b->sleeping) return;
+
+        if (a->sleeping && !b->sleeping) std::swap(a, b);
+
+        constexpr int maxManifoldsPerPair = 4;
+        int emitted = 0;
+
+        constexpr float childBroadphaseMargin = 0.02f;
+
+        bool aCompound = (a->collider.type == ColliderType::Compound);
+        bool bCompound = (b->collider.type == ColliderType::Compound);
+
+        if (!aCompound && !bCompound) {
+            ContactManifold m;
+            if (detectBodyBodyConvex(a, b, m)) out.push_back(m);
+            return;
+        }
+
+        if (aCompound && (!a->collider.compound)) return;
+        if (bCompound && (!b->collider.compound)) return;
+
+        if (aCompound && bCompound) {
+            for (const CompoundChild& ca : a->collider.compound->children) {
+                RigidBody pa = makeChildProxyBody(a, ca);
+                float ra = ca.collider.boundingRadius();
+                for (const CompoundChild& cb : b->collider.compound->children) {
+                    RigidBody pb = makeChildProxyBody(b, cb);
+                    float rb = cb.collider.boundingRadius();
+                    Vec3 d = pb.position - pa.position;
+                    float maxD = ra + rb + childBroadphaseMargin;
+                    if (d.lengthSq() > maxD * maxD) continue;
+
+                    ContactManifold mChild;
+                    if (detectBodyBodyConvex(&pa, &pb, mChild)) {
+                        mChild.a = a;
+                        mChild.b = b;
+                        orientNormalForPair(mChild, a, b);
+                        out.push_back(mChild);
+                        if (++emitted >= maxManifoldsPerPair) return;
+                    }
+                }
+            }
+            return;
+        }
+
+        if (aCompound) {
+            for (const CompoundChild& ca : a->collider.compound->children) {
+                RigidBody pa = makeChildProxyBody(a, ca);
+                float ra = ca.collider.boundingRadius();
+                float rb = b->collider.boundingRadius();
+                Vec3 d = b->position - pa.position;
+                float maxD = ra + rb + childBroadphaseMargin;
+                if (d.lengthSq() > maxD * maxD) continue;
+
+                ContactManifold mChild;
+                if (detectBodyBodyConvex(&pa, b, mChild)) {
+                    mChild.a = a;
+                    mChild.b = b;
+                    orientNormalForPair(mChild, a, b);
+                    out.push_back(mChild);
+                    if (++emitted >= maxManifoldsPerPair) return;
+                }
+            }
+            return;
+        }
+
+        for (const CompoundChild& cb : b->collider.compound->children) {
+            RigidBody pb = makeChildProxyBody(b, cb);
+            float ra = a->collider.boundingRadius();
+            float rb = cb.collider.boundingRadius();
+            Vec3 d = pb.position - a->position;
+            float maxD = ra + rb + childBroadphaseMargin;
+            if (d.lengthSq() > maxD * maxD) continue;
+
+            ContactManifold mChild;
+            if (detectBodyBodyConvex(a, &pb, mChild)) {
+                mChild.a = a;
+                mChild.b = b;
+                orientNormalForPair(mChild, a, b);
+                out.push_back(mChild);
+                if (++emitted >= maxManifoldsPerPair) return;
+            }
+        }
+    }
+
+    bool detectBodyBodyConvex(RigidBody* a, RigidBody* b, ContactManifold& m) {
         if (!a || !b) return false;
         if (a->isStatic && b->isStatic) return false;
         if (a->sleeping && b->sleeping) return false;
 
-        // Non-convex shapes are not supported yet. Make this explicit so we don't
-        // accidentally feed concave shapes into GJK.
         if (!a->collider.isConvex() || !b->collider.isConvex()) return false;
 
         if (a->collider.type == ColliderType::Sphere && b->collider.type == ColliderType::Sphere) {

@@ -101,6 +101,76 @@
 				"Debug"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Build Debug (Configured)",
+			"type": "shell",
+			"command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+			"args": [
+				"--build",
+				"build",
+				"--config",
+				"Debug"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Build Debug (Configured)",
+			"type": "shell",
+			"command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+			"args": [
+				"--build",
+				"build",
+				"--config",
+				"Debug"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Build Debug (Configured)",
+			"type": "shell",
+			"command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+			"args": [
+				"--build",
+				"build",
+				"--config",
+				"Debug"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Build Debug (Configured)",
+			"type": "shell",
+			"command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+			"args": [
+				"--build",
+				"build",
+				"--config",
+				"Debug"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Build Debug (Configured)",
+			"type": "shell",
+			"command": "${env:USERPROFILE}\\vcpkg\\downloads\\tools\\cmake-3.31.10-windows\\cmake-3.31.10-windows-x86_64\\bin\\cmake.exe",
+			"args": [
+				"--build",
+				"build",
+				"--config",
+				"Debug"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
 		}
 	]
 }

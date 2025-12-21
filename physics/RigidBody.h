@@ -44,6 +44,14 @@ struct RigidBody {
             };
         }
 
+        if (collider.type == ColliderType::Convex || collider.type == ColliderType::Compound) {
+            float r = collider.boundingRadius();
+            float I = 0.4f * mass * r * r;
+            if (I <= 0.0001f) return {0.0f, 0.0f, 0.0f};
+            float inv = 1.0f / I;
+            return {inv, inv, inv};
+        }
+
         float r = collider.capsule.radius;
         float L = collider.capsule.halfHeight * 2.0f;
 

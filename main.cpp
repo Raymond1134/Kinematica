@@ -286,6 +286,55 @@ int main() {
             physicsWorld.addRigidBody(&dynamicBodies.back());
         }
 
+        if (IsKeyPressed(KEY_ZERO)) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            
+            // U-shape made from 3 boxes.
+            std::vector<CompoundChild> children;
+            {
+                CompoundChild base;
+                base.collider = Collider::createBox({0.60f, 0.15f, 0.20f});
+                base.localPosition = {0.0f, 0.0f, 0.0f};
+                base.localOrientation = Quat::identity();
+                children.push_back(base);
+
+                CompoundChild left;
+                left.collider = Collider::createBox({0.15f, 0.45f, 0.20f});
+                left.localPosition = {-0.45f, 0.45f, 0.0f};
+                left.localOrientation = Quat::identity();
+                children.push_back(left);
+
+                CompoundChild right;
+                right.collider = Collider::createBox({0.15f, 0.45f, 0.20f});
+                right.localPosition = {0.45f, 0.45f, 0.0f};
+                right.localOrientation = Quat::identity();
+                children.push_back(right);
+            }
+
+            RigidBody newCompound;
+            newCompound.position = camPos + camFwd * 2.0f;
+            newCompound.velocity = camFwd * 10.0f;
+
+            Vec3 up = {0.0f, 1.0f, 0.0f};
+            Vec3 rightAxis = Vec3::cross(up, camFwd).normalized();
+            if (rightAxis.lengthSq() < 1e-8f) rightAxis = {1.0f, 0.0f, 0.0f};
+            float tiltDeg = (float)GetRandomValue(-5, 5);
+            float rollDeg = (float)GetRandomValue(-5, 5);
+            Quat qTilt = Quat::fromAxisAngle(rightAxis, tiltDeg * DEG2RAD);
+            Quat qRoll = Quat::fromAxisAngle(camFwd, rollDeg * DEG2RAD);
+            newCompound.orientation = (qRoll * qTilt).normalized();
+
+            newCompound.angularVelocity = {0.0f, 0.0f, 0.0f};
+            newCompound.mass = 4.0f;
+            newCompound.friction = 0.60f;
+            newCompound.restitution = 0.03f;
+            newCompound.collider = Collider::createCompound(children);
+
+            dynamicBodies.push_back(newCompound);
+            physicsWorld.addRigidBody(&dynamicBodies.back());
+        }
+
         while (accumulator >= FIXED_DT) {
             physicsWorld.step(FIXED_DT);
             accumulator -= FIXED_DT;

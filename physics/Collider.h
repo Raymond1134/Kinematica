@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../math/Vec3.h"
+#include "../math/Quat.h"
 #include "shapes/SphereShape.h"
 #include "shapes/BoxShape.h"
 #include "shapes/CapsuleShape.h"
@@ -16,10 +17,12 @@ enum class ColliderType {
     Box,
     Capsule,
     Convex,
-    // Non-convex placeholders (not yet supported by narrowphase)
     Mesh,
     Compound
 };
+
+struct CompoundChild;
+struct CompoundShape;
 
 struct Collider : public ConvexShape {
     ColliderType type;
@@ -28,12 +31,9 @@ struct Collider : public ConvexShape {
     BoxShape box;
     CapsuleShape capsule;
     PolyhedronShape polyhedron;
-
-    // Placeholders for future non-convex support.
-    // These are intentionally opaque for now; collision dispatch will explicitly
-    // refuse non-convex types until a BVH/triangle pipeline is added.
     std::shared_ptr<void> mesh;
-    std::shared_ptr<void> compound;
+    std::shared_ptr<CompoundShape> compound;
+    float compoundBoundRadius = 0.0f;
 
     Collider() : type(ColliderType::Sphere) {}
 
@@ -62,6 +62,8 @@ struct Collider : public ConvexShape {
         return c;
     }
 
+    static Collider createCompound(const std::vector<CompoundChild>& children);
+
     bool isConvex() const noexcept {
         return type == ColliderType::Sphere ||
                type == ColliderType::Box ||
@@ -80,8 +82,9 @@ struct Collider : public ConvexShape {
             case ColliderType::Convex:
                 return polyhedron.boundRadius;
             case ColliderType::Mesh:
-            case ColliderType::Compound:
                 break;
+            case ColliderType::Compound:
+                return compoundBoundRadius;
         }
         return 0.0f;
     }
@@ -124,3 +127,30 @@ struct Collider : public ConvexShape {
         return {0, 0, 0};
     }
 };
+
+struct CompoundChild {
+    Collider collider;
+    Vec3 localPosition = {0.0f, 0.0f, 0.0f};
+    Quat localOrientation = Quat::identity();
+};
+
+struct CompoundShape {
+    std::vector<CompoundChild> children;
+};
+
+inline Collider Collider::createCompound(const std::vector<CompoundChild>& children) {
+    Collider c;
+    c.type = ColliderType::Compound;
+    c.compound = std::make_shared<CompoundShape>();
+    c.compound->children = children;
+
+    float r = 0.0f;
+    for (const CompoundChild& child : c.compound->children) {
+        float childR = child.collider.boundingRadius();
+        float d = child.localPosition.length();
+        float rr = d + childR;
+        if (rr > r) r = rr;
+    }
+    c.compoundBoundRadius = r;
+    return c;
+}

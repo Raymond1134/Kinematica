@@ -50,58 +50,79 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
     Vector3 pos = { body->position.x, body->position.y, body->position.z };
     Color color = body->isStatic ? GRAY : BLUE;
     
-    Quat q = body->orientation.normalized();
-    float qw = q.w;
-    if (qw > 1.0f) qw = 1.0f;
-    if (qw < -1.0f) qw = -1.0f;
+    auto applyQuat = [&](const Quat& qq) {
+        Quat nq = qq.normalized();
+        float w = nq.w;
+        if (w > 1.0f) w = 1.0f;
+        if (w < -1.0f) w = -1.0f;
 
-    float rotationAngle = 2.0f * acosf(qw);
-    float s = sqrtf(1.0f - qw * qw);
-    Vector3 rotationAxis = {1.0f, 0.0f, 0.0f};
-    if (s > 0.0001f) {
-        rotationAxis = {q.x / s, q.y / s, q.z / s};
-    }
-    
+        float ang = 2.0f * acosf(w);
+        float ss = sqrtf(1.0f - w * w);
+        Vector3 axis = {1.0f, 0.0f, 0.0f};
+        if (ss > 0.0001f) {
+            axis = {nq.x / ss, nq.y / ss, nq.z / ss};
+        }
+        if (ang > 0.001f) {
+            rlRotatef(ang * RAD2DEG, axis.x, axis.y, axis.z);
+        }
+    };
+
+    auto drawColliderAtOrigin = [&](const Collider& c) {
+        switch (c.type) {
+            case ColliderType::Sphere: {
+                float radius = c.sphere.radius;
+                DrawSphere(Vector3{0.0f, 0.0f, 0.0f}, radius, color);
+                DrawSphereWires(Vector3{0.0f, 0.0f, 0.0f}, radius, 16, 16, Fade(BLACK, 0.7f));
+                DrawLine3D(Vector3{0.0f, 0.0f, 0.0f}, Vector3{radius, 0.0f, 0.0f}, Fade(RED, 0.7f));
+                DrawLine3D(Vector3{0.0f, 0.0f, 0.0f}, Vector3{0.0f, radius, 0.0f}, Fade(GREEN, 0.7f));
+                DrawLine3D(Vector3{0.0f, 0.0f, 0.0f}, Vector3{0.0f, 0.0f, radius}, Fade(BLUE, 0.7f));
+                break;
+            }
+            case ColliderType::Box: {
+                Vec3 half = c.box.halfExtents;
+                Vector3 boxSize = {half.x * 2.0f, half.y * 2.0f, half.z * 2.0f};
+                DrawCubeV(Vector3{0.0f, 0.0f, 0.0f}, boxSize, color);
+                Vector3 outlineSize = {boxSize.x, boxSize.y, boxSize.z};
+                DrawCubeWiresV(Vector3{0.0f, 0.0f, 0.0f}, outlineSize, BLACK);
+                break;
+            }
+            case ColliderType::Capsule: {
+                float radius = c.capsule.radius;
+                float halfHeight = c.capsule.halfHeight;
+                DrawCapsule(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 8, 8, color);
+                DrawCapsuleWires(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 16, 16, Fade(BLACK, 0.7f));
+                DrawLine3D(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, Fade(RED, 0.7f));
+                break;
+            }
+            case ColliderType::Convex: {
+                drawConvex(c.polyhedron.verts, color);
+                break;
+            }
+            case ColliderType::Mesh:
+            case ColliderType::Compound:
+                break;
+        }
+    };
+
     rlPushMatrix();
     rlTranslatef(pos.x, pos.y, pos.z);
-    
-    if (rotationAngle > 0.001f) {
-        rlRotatef(rotationAngle * RAD2DEG, rotationAxis.x, rotationAxis.y, rotationAxis.z);
-    }
+    applyQuat(body->orientation);
     
     switch (body->collider.type) {
-        case ColliderType::Sphere: {
-            float radius = body->collider.sphere.radius;
-            DrawSphere({0, 0, 0}, radius, color);
-            DrawSphereWires({0, 0, 0}, radius, 16, 16, Fade(BLACK, 0.7f));
-            DrawLine3D({0, 0, 0}, {radius, 0, 0}, Fade(RED, 0.7f));
-            DrawLine3D({0, 0, 0}, {0, radius, 0}, Fade(GREEN, 0.7f));
-            DrawLine3D({0, 0, 0}, {0, 0, radius}, Fade(BLUE, 0.7f));
+        case ColliderType::Compound: {
+            if (body->collider.compound) {
+                for (const CompoundChild& child : body->collider.compound->children) {
+                    rlPushMatrix();
+                    rlTranslatef(child.localPosition.x, child.localPosition.y, child.localPosition.z);
+                    applyQuat(child.localOrientation);
+                    drawColliderAtOrigin(child.collider);
+                    rlPopMatrix();
+                }
+            }
             break;
         }
-        case ColliderType::Box: {
-            Vec3 half = body->collider.box.halfExtents;
-            Vector3 boxSize = {half.x * 2.0f, half.y * 2.0f, half.z * 2.0f};
-            DrawCubeV({0, 0, 0}, boxSize, color);
-            Vector3 outlineSize = {boxSize.x, boxSize.y, boxSize.z};
-            DrawCubeWiresV({0, 0, 0}, outlineSize, BLACK);
-            break;
-        }
-        case ColliderType::Capsule: {
-            float radius = body->collider.capsule.radius;
-            float halfHeight = body->collider.capsule.halfHeight;
-            DrawCapsule({0, -halfHeight, 0}, {0, halfHeight, 0}, radius, 8, 8, color);
-            DrawCapsuleWires({0, -halfHeight, 0}, {0, halfHeight, 0}, radius, 16, 16, Fade(BLACK, 0.7f));
-            DrawLine3D({0, -halfHeight, 0}, {0, halfHeight, 0}, Fade(RED, 0.7f));
-            break;
-        }
-        case ColliderType::Convex: {
-            drawConvex(body->collider.polyhedron.verts, color);
-            break;
-        }
-        case ColliderType::Mesh:
-        case ColliderType::Compound:
-            // Not supported yet.
+        default:
+            drawColliderAtOrigin(body->collider);
             break;
     }
 
