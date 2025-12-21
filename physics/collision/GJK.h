@@ -6,33 +6,42 @@
 #include "Minkowski.h"
 #include "GJKSimplex.h"
 
-inline bool gjkIntersect(
+struct GJKResult {
+    bool hit = false;
+    Simplex simplex;
+};
+
+inline GJKResult gjk(
     const RigidBody& A,
     const RigidBody& B
 ) {
+    GJKResult result;
     Simplex simplex;
 
     Vec3 direction = {1.0f, 0.0f, 0.0f};
 
-    Vec3 point = support(A, B, direction);
-    simplex.pushFront(point);
-    direction = -point;
+    SupportPoint v = supportPoint(A, B, direction);
+    simplex.pushFront(v);
+    direction = -v.p;
 
     // Safety limits
     const int MAX_ITERATIONS = 32;
 
     for (int iter = 0; iter < MAX_ITERATIONS; ++iter) {
         if (direction.lengthSq() < 1e-8f) {
-            return true;
+            result.hit = true;
+            result.simplex = simplex;
+            return result;
         }
 
-        point = support(A, B, direction);
+        v = supportPoint(A, B, direction);
 
-        if (Vec3::dot(point, direction) < 0.0f) {
-            return false;
+        if (Vec3::dot(v.p, direction) < 0.0f) {
+            result.hit = false;
+            return result;
         }
 
-        simplex.pushFront(point);
+        simplex.pushFront(v);
 
         if (simplex.size == 2) {
             handleLine(simplex, direction);
@@ -42,10 +51,21 @@ inline bool gjkIntersect(
         }
         else if (simplex.size == 4) {
             if (handleTetrahedron(simplex, direction)) {
-                return true;
+                result.hit = true;
+                result.simplex = simplex;
+                return result;
             }
         }
     }
 
-    return true;
+    result.hit = true;
+    result.simplex = simplex;
+    return result;
+}
+
+inline bool gjkIntersect(
+    const RigidBody& A,
+    const RigidBody& B
+) {
+    return gjk(A, B).hit;
 }

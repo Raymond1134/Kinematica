@@ -8,12 +8,17 @@
 #include "shapes/ConvexShape.h"
 #include <vector>
 #include <algorithm>
+#include <cassert>
+#include <memory>
 
 enum class ColliderType {
     Sphere,
     Box,
     Capsule,
-    Convex
+    Convex,
+    // Non-convex placeholders (not yet supported by narrowphase)
+    Mesh,
+    Compound
 };
 
 struct Collider : public ConvexShape {
@@ -23,6 +28,12 @@ struct Collider : public ConvexShape {
     BoxShape box;
     CapsuleShape capsule;
     PolyhedronShape polyhedron;
+
+    // Placeholders for future non-convex support.
+    // These are intentionally opaque for now; collision dispatch will explicitly
+    // refuse non-convex types until a BVH/triangle pipeline is added.
+    std::shared_ptr<void> mesh;
+    std::shared_ptr<void> compound;
 
     Collider() : type(ColliderType::Sphere) {}
 
@@ -51,7 +62,33 @@ struct Collider : public ConvexShape {
         return c;
     }
 
+    bool isConvex() const noexcept {
+        return type == ColliderType::Sphere ||
+               type == ColliderType::Box ||
+               type == ColliderType::Capsule ||
+               type == ColliderType::Convex;
+    }
+
+    float boundingRadius() const noexcept {
+        switch (type) {
+            case ColliderType::Sphere:
+                return sphere.radius;
+            case ColliderType::Box:
+                return box.halfExtents.length();
+            case ColliderType::Capsule:
+                return capsule.halfHeight + capsule.radius;
+            case ColliderType::Convex:
+                return polyhedron.boundRadius;
+            case ColliderType::Mesh:
+            case ColliderType::Compound:
+                break;
+        }
+        return 0.0f;
+    }
+
     Vec3 support(const Vec3& dir) const override {
+        assert(isConvex() && "support() called on non-convex collider");
+
         Vec3 d = dir.normalized();
         switch (type) {
             case ColliderType::Sphere:
@@ -80,6 +117,9 @@ struct Collider : public ConvexShape {
                 }
                 return best;
             }
+            case ColliderType::Mesh:
+            case ColliderType::Compound:
+                break;
         }
         return {0, 0, 0};
     }

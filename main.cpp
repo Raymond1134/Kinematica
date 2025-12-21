@@ -3,10 +3,8 @@
 #include "physics/Spring.h"
 #include "render/Renderer.h"
 #include <chrono>
-#include <vector>
 #include <raylib.h>
 #include <list>
-#include <vector>
 
 static float getDeltaTime() {
     static auto last = std::chrono::high_resolution_clock::now();
@@ -15,9 +13,6 @@ static float getDeltaTime() {
     last = now;
     return diff.count();
 }
-
-#include "physics/collision/GJK.h"
-#include <iostream>
 
 int main() {
     const float FIXED_DT = 1.0f / 60.0f;

@@ -99,9 +99,14 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
             drawConvex(body->collider.polyhedron.verts, color);
             break;
         }
+        case ColliderType::Mesh:
+        case ColliderType::Compound:
+            // Not supported yet.
+            break;
     }
-        rlPopMatrix();
-    }
+
+    rlPopMatrix();
+}
 
 void Renderer::drawConvex(const std::vector<Vec3>& verts, Color color) const {
     if (verts.size() < 4) return;
