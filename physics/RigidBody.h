@@ -2,7 +2,7 @@
 
 #include "../math/Vec3.h"
 #include "../math/Quat.h"
-#include "Collider.h"
+#include "collision/Collider.h"
 
 struct RigidBody {
     Vec3 position;
@@ -13,9 +13,7 @@ struct RigidBody {
     float restitution = 0.5f;
     float friction = 0.15f;
     Collider collider;
-
     bool isStatic = false;
-
     bool sleeping = false;
     float sleepTimer = 0.0f;
     bool hadContactThisStep = false;
@@ -26,7 +24,7 @@ struct RigidBody {
 
         if (collider.type == ColliderType::Sphere) {
             float r = collider.sphere.radius;
-            float I = 0.4f * mass * r * r; // 2/5 m r^2
+            float I = 0.4f * mass * r * r; // 2/5 m r^2 constant I for now
             if (I <= 0.0001f) return {0.0f, 0.0f, 0.0f};
             float inv = 1.0f / I;
             return {inv, inv, inv};
@@ -54,7 +52,6 @@ struct RigidBody {
 
         float r = collider.capsule.radius;
         float L = collider.capsule.halfHeight * 2.0f;
-
         float Ixx = (1.0f / 12.0f) * mass * (3.0f * r * r + L * L);
         float Iyy = 0.5f * mass * r * r;
         float Izz = Ixx;

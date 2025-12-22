@@ -5,7 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Sources
-set(SOURCES main.cpp render/Renderer.cpp)
+set(SOURCES
+    main.cpp
+    render/Renderer.cpp
+    physics/PhysicsWorld.cpp
+)
 
 
 find_package(OpenMP)

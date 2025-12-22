@@ -27,9 +27,9 @@ int main() {
     Renderer renderer;
     if (!renderer.init(1280, 720, "Kinematica Sandbox")) return -1;
     {
-        constexpr int wallW = 12;
-        constexpr int wallH = 12;
-        const Vec3 half = {0.15f, 0.15f, 0.15f};
+        constexpr int wallW = 20;
+        constexpr int wallH = 20;
+        const Vec3 half = {0.1f, 0.1f, 0.1f};
         const float spacingX = half.x * 2.0f;
         const float spacingY = half.y * 2.0f;
 
@@ -147,7 +147,7 @@ int main() {
             newConvex.velocity = camFwd * 10.0f;
             newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
             Vec3 up = {0.0f, 1.0f, 0.0f};
-            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.orientation = Quat::identity();
             newConvex.mass = 1.0f;
             newConvex.friction = 0.35f;
             newConvex.restitution = 0.15f;
@@ -173,7 +173,7 @@ int main() {
             newConvex.velocity = camFwd * 10.0f;
             newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
             Vec3 up = {0.0f, 1.0f, 0.0f};
-            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.orientation = Quat::identity();
             newConvex.mass = 1.0f;
             newConvex.friction = 0.35f;
             newConvex.restitution = 0.15f;
@@ -199,7 +199,7 @@ int main() {
             newConvex.velocity = camFwd * 10.0f;
             newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
             Vec3 up = {0.0f, 1.0f, 0.0f};
-            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.orientation = Quat::identity();
             newConvex.mass = 1.0f;
             newConvex.friction = 0.35f;
             newConvex.restitution = 0.15f;
@@ -226,7 +226,7 @@ int main() {
             newConvex.velocity = camFwd * 10.0f;
             newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
             Vec3 up = {0.0f, 1.0f, 0.0f};
-            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.orientation = Quat::identity();
             newConvex.mass = 1.0f;
             newConvex.friction = 0.35f;
             newConvex.restitution = 0.15f;
@@ -254,7 +254,7 @@ int main() {
             newConvex.velocity = camFwd * 10.0f;
             newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
             Vec3 up = {0.0f, 1.0f, 0.0f};
-            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.orientation = Quat::identity();
             newConvex.mass = 0.1f;
             newConvex.friction = 0.35f;
             newConvex.restitution = 0.0f;
@@ -278,7 +278,7 @@ int main() {
             newConvex.velocity = camFwd * 10.0f;
             newConvex.angularVelocity = {0.0f, 0.0f, 0.0f};
             Vec3 up = {0.0f, 1.0f, 0.0f};
-            newConvex.orientation = Quat::lookRotation(camFwd, up);
+            newConvex.orientation = Quat::identity();
             newConvex.mass = 1.0f;
             newConvex.friction = 0.35f;
             newConvex.restitution = 0.15f;

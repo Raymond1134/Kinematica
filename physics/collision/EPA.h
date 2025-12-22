@@ -1,63 +1,30 @@
 #pragma once
 
-#include "../../math/Vec3.h"
 #include "../RigidBody.h"
-
 #include "Minkowski.h"
 #include "Simplex.h"
 #include "SupportPoint.h"
+#include "EPATypes.h"
 
 #include <cmath>
 #include <limits>
-#include <vector>
 
-struct EPAFaceIdx {
-    int a = 0;
-    int b = 0;
-    int c = 0;
-    Vec3 normal = {0.0f, 1.0f, 0.0f};
-    float distance = 0.0f;
-};
 
-struct EPAEdgeIdx {
-    int a = 0;
-    int b = 0;
-};
-
-struct EPAResult {
-    Vec3 normal = {0.0f, 1.0f, 0.0f};
-    float penetration = 0.0f;
-    Vec3 pointAWorld = {0.0f, 0.0f, 0.0f};
-    Vec3 pointBWorld = {0.0f, 0.0f, 0.0f};
-    bool hasWitness = false;
-};
-
-struct EPAScratch {
-    std::vector<SupportPoint> verts;
-    std::vector<EPAFaceIdx> faces;
-    std::vector<EPAEdgeIdx> boundary;
-};
-
-inline bool nearlyEqualVec3(const Vec3& a, const Vec3& b, float epsSq = 1e-10f) {
+inline bool nearlyEqualVec3(const Vec3& a, const Vec3& b, float epsSq = 1e-12f) {
     Vec3 d = a - b;
     return d.lengthSq() <= epsSq;
 }
 
 inline void addBoundaryEdge(std::vector<EPAEdgeIdx>& edges, int a, int b) {
     for (auto it = edges.begin(); it != edges.end(); ++it) {
-        if (it->a == b && it->b == a) {
-            edges.erase(it);
-            return;
-        }
+        if (it->a == b && it->b == a) { edges.erase(it); return; }
     }
     edges.push_back({a, b});
 }
 
 inline EPAFaceIdx makeFaceIdx(const std::vector<SupportPoint>& verts, int a, int b, int c) {
     EPAFaceIdx f;
-    f.a = a;
-    f.b = b;
-    f.c = c;
+    f.a = a; f.b = b; f.c = c;
 
     const Vec3& A = verts[a].p;
     const Vec3& B = verts[b].p;
@@ -66,6 +33,7 @@ inline EPAFaceIdx makeFaceIdx(const std::vector<SupportPoint>& verts, int a, int
     Vec3 ab = B - A;
     Vec3 ac = C - A;
     Vec3 n = Vec3::cross(ab, ac);
+    
     if (n.lengthSq() < 1e-12f) {
         f.normal = {0.0f, 1.0f, 0.0f};
         f.distance = std::numeric_limits<float>::infinity();
@@ -83,72 +51,50 @@ inline EPAFaceIdx makeFaceIdx(const std::vector<SupportPoint>& verts, int a, int
     return f;
 }
 
-inline void closestPointToOriginOnTriangleBarycentric(
-    const Vec3& a,
-    const Vec3& b,
-    const Vec3& c,
-    float& outU,
-    float& outV,
-    float& outW
-) {
+inline void closestPointToOriginOnTriangleBarycentric(const Vec3& a, const Vec3& b, const Vec3& c, float& outU, float& outV, float& outW) {
     Vec3 ab = b - a;
     Vec3 ac = c - a;
     Vec3 ap = -a;
 
     float d1 = Vec3::dot(ab, ap);
     float d2 = Vec3::dot(ac, ap);
+
     if (d1 <= 0.0f && d2 <= 0.0f) {
-        outU = 1.0f;
-        outV = 0.0f;
-        outW = 0.0f;
-        return;
+        outU = 1.0f; outV = 0.0f; outW = 0.0f; return;
     }
 
     Vec3 bp = -b;
     float d3 = Vec3::dot(ab, bp);
     float d4 = Vec3::dot(ac, bp);
+
     if (d3 >= 0.0f && d4 <= d3) {
-        outU = 0.0f;
-        outV = 1.0f;
-        outW = 0.0f;
-        return;
+        outU = 0.0f; outV = 1.0f; outW = 0.0f; return;
     }
 
     float vc = d1 * d4 - d3 * d2;
     if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
         float v = d1 / (d1 - d3);
-        outU = 1.0f - v;
-        outV = v;
-        outW = 0.0f;
-        return;
+        outU = 1.0f - v; outV = v; outW = 0.0f; return;
     }
 
     Vec3 cp = -c;
     float d5 = Vec3::dot(ab, cp);
     float d6 = Vec3::dot(ac, cp);
+
     if (d6 >= 0.0f && d5 <= d6) {
-        outU = 0.0f;
-        outV = 0.0f;
-        outW = 1.0f;
-        return;
+        outU = 0.0f; outV = 0.0f; outW = 1.0f; return;
     }
 
     float vb = d5 * d2 - d1 * d6;
     if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
         float w = d2 / (d2 - d6);
-        outU = 1.0f - w;
-        outV = 0.0f;
-        outW = w;
-        return;
+        outU = 1.0f - w; outV = 0.0f; outW = w; return;
     }
 
     float va = d3 * d6 - d5 * d4;
     if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
         float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        outU = 0.0f;
-        outV = 1.0f - w;
-        outW = w;
-        return;
+        outU = 0.0f; outV = 1.0f - w; outW = w; return;
     }
 
     float denom = 1.0f / (va + vb + vc);
@@ -157,25 +103,17 @@ inline void closestPointToOriginOnTriangleBarycentric(
     outU = 1.0f - outV - outW;
 }
 
-inline void ensureTetrahedron(
-    const RigidBody& A,
-    const RigidBody& B,
-    std::vector<SupportPoint>& verts
-) {
+inline void ensureTetrahedron(const RigidBody& A, const RigidBody& B, std::vector<SupportPoint>& verts) {
     auto tryAdd = [&](const Vec3& dir) -> bool {
         if (verts.size() >= 4) return true;
         if (dir.lengthSq() < 1e-12f) return false;
         SupportPoint p = supportPoint(A, B, dir);
-        for (const auto& v : verts) {
-            if (nearlyEqualVec3(p.p, v.p)) return false;
-        }
+        for (const auto& v : verts) { if (nearlyEqualVec3(p.p, v.p)) return false;}
         verts.push_back(p);
         return true;
     };
 
-    static const Vec3 axes[] = {
-        {1,0,0},{0,1,0},{0,0,1},{-1,0,0},{0,-1,0},{0,0,-1}
-    };
+    static const Vec3 axes[] = { {1,0,0}, {0,1,0}, {0,0,1}, {-1,0,0}, {0,-1,0}, {0,0,-1} };
 
     int safety = 0;
     while (verts.size() < 4 && safety++ < 32) {
@@ -195,7 +133,6 @@ inline void ensureTetrahedron(
             if (dir.lengthSq() < 1e-10f) dir = Vec3::cross(ab, axes[2]);
             if (tryAdd(dir)) continue;
             if (tryAdd(-dir)) continue;
-
             bool added = false;
             for (const Vec3& ax : axes) {
                 if (tryAdd(ax)) { added = true; break; }
@@ -207,6 +144,7 @@ inline void ensureTetrahedron(
         Vec3 ab = verts[1].p - verts[0].p;
         Vec3 ac = verts[2].p - verts[0].p;
         Vec3 n = Vec3::cross(ab, ac);
+
         if (n.lengthSq() > 1e-10f) {
             if (tryAdd(n)) continue;
             if (tryAdd(-n)) continue;
@@ -220,24 +158,15 @@ inline void ensureTetrahedron(
     }
 }
 
-inline EPAResult epaPenetration(
-    const RigidBody& A,
-    const RigidBody& B,
-    const Simplex& simplex
-) {
+inline EPAResult epaPenetration(const RigidBody& A, const RigidBody& B, const Simplex& simplex) {
     EPAResult out;
 
     std::vector<SupportPoint> verts;
     verts.reserve(128);
-    for (int i = 0; i < simplex.size; ++i) {
-        verts.push_back(simplex.verts[i]);
-    }
+    for (int i = 0; i < simplex.size; ++i) { verts.push_back(simplex.verts[i]); }
     if (verts.empty()) return out;
-
     ensureTetrahedron(A, B, verts);
-    if (verts.size() < 4) {
-        return out;
-    }
+    if (verts.size() < 4) { return out; }
 
     std::vector<EPAFaceIdx> faces;
     faces.reserve(256);
@@ -255,7 +184,6 @@ inline EPAResult epaPenetration(
         const SupportPoint& v0 = verts[f.a];
         const SupportPoint& v1 = verts[f.b];
         const SupportPoint& v2 = verts[f.c];
-
         float u = 0.0f, v = 0.0f, w = 0.0f;
         closestPointToOriginOnTriangleBarycentric(v0.p, v1.p, v2.p, u, v, w);
         out.pointAWorld = v0.aWorld * u + v1.aWorld * v + v2.aWorld * w;
@@ -333,12 +261,7 @@ inline EPAResult epaPenetration(
     return out;
 }
 
-inline EPAResult epaPenetration(
-    const RigidBody& A,
-    const RigidBody& B,
-    const Simplex& simplex,
-    EPAScratch& scratch
-) {
+inline EPAResult epaPenetration(const RigidBody& A, const RigidBody& B, const Simplex& simplex, EPAScratch& scratch) {
     EPAResult out;
 
     scratch.verts.clear();

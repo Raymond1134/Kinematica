@@ -3,89 +3,126 @@
 #include "../../math/Vec3.h"
 #include <vector>
 #include <cmath>
+#include <limits>
 
 struct PolyhedronShape {
-	std::vector<Vec3> verts;
+    struct Tri { int a, b, c; };
+    struct Edge { int a, b; };
+    std::vector<Vec3> verts;
+    std::vector<Tri> tris;
+    std::vector<Edge> edges;
+    float boundRadius = 0.0f;
 
-	struct Tri {
-		int a, b, c;
-	};
-	struct Edge {
-		int a, b;
-	};
+    PolyhedronShape() = default;
 
-	std::vector<Tri> tris;
-	std::vector<Edge> edges;
+    PolyhedronShape(const std::vector<Vec3>& v) : verts(v) { computeBound(); buildRenderCache(); }
 
-	float boundRadius = 0.0f;
-	PolyhedronShape() = default;
-	PolyhedronShape(const std::vector<Vec3>& v) : verts(v) {
-		float r2 = 0.0f;
-		for (const Vec3& p : verts) {
-			float d2 = p.lengthSq();
-			if (d2 > r2) r2 = d2;
-		}
-		boundRadius = (r2 > 0.0f) ? std::sqrt(r2) : 0.0f;
+private:
+    void computeBound() {
+        float r2 = 0.0f;
+        for (const Vec3& p : verts) { r2 = std::max(r2, p.lengthSq()); }
+        boundRadius = (r2 > 0.0f) ? std::sqrt(r2) : 0.0f;
+    }
 
-		buildRenderCache();
-	}
+    static Vec3 faceNormal(const Vec3& a, const Vec3& b, const Vec3& c) { return Vec3::cross(b - a, c - a); }
 
-	void buildRenderCache() {
-		tris.clear();
-		edges.clear();
-		if (verts.size() < 4) return;
+    static bool pointOutsideFace(const Vec3& p, const Vec3& a, const Vec3& normal ) { return Vec3::dot(normal, p - a) > 1e-6f; }
 
-		// Naive convex hull triangulation
-		for (size_t i = 0; i < verts.size(); ++i) {
-			for (size_t j = 0; j < verts.size(); ++j) {
-				if (j == i) continue;
-				for (size_t k = 0; k < verts.size(); ++k) {
-					if (k == i || k == j) continue;
-					Vec3 v0 = verts[i];
-					Vec3 v1 = verts[j];
-					Vec3 v2 = verts[k];
-					Vec3 normal = Vec3::cross(v1 - v0, v2 - v0);
-					if (normal.x == 0 && normal.y == 0 && normal.z == 0) continue;
-					bool valid = true;
-					float sign = 0.0f;
-					for (size_t m = 0; m < verts.size(); ++m) {
-						if (m == i || m == j || m == k) continue;
-						float d = Vec3::dot(normal, verts[m] - v0);
-						if (sign == 0.0f && fabsf(d) > 1e-6f) sign = d;
-						if (d * sign < -1e-6f) { valid = false; break; }
-					}
-					if (!valid) continue;
+    void addEdgeUnique(int a, int b) {
+        if (a == b) return;
+        if (a > b) std::swap(a, b);
+        for (const auto& e : edges) { if (e.a == a && e.b == b) return; }
+        edges.push_back({a, b});
+    }
 
-					bool duplicate = false;
-					for (const auto& f : tris) {
-						if ((f.a == (int)i && f.b == (int)j && f.c == (int)k) ||
-							(f.a == (int)i && f.b == (int)k && f.c == (int)j) ||
-							(f.a == (int)j && f.b == (int)i && f.c == (int)k) ||
-							(f.a == (int)j && f.b == (int)k && f.c == (int)i) ||
-							(f.a == (int)k && f.b == (int)i && f.c == (int)j) ||
-							(f.a == (int)k && f.b == (int)j && f.c == (int)i)) {
-							duplicate = true;
-							break;
-						}
-					}
-					if (!duplicate) tris.push_back({(int)i, (int)j, (int)k});
-				}
-			}
-		}
+public:
+    void buildRenderCache() {
+        tris.clear();
+        edges.clear();
 
-		auto addEdge = [&](int a, int b) {
-			if (a == b) return;
-			if (a > b) std::swap(a, b);
-			for (const auto& e : edges) {
-				if (e.a == a && e.b == b) return;
-			}
-			edges.push_back({a, b});
-		};
+        if (verts.size() < 4) return;
 
-		for (const auto& t : tris) {
-			addEdge(t.a, t.b);
-			addEdge(t.b, t.c);
-			addEdge(t.c, t.a);
-		}
-	}
+        const int n = (int)verts.size();
+
+        int i0 = 0, i1 = -1, i2 = -1, i3 = -1;
+
+        float maxD = 0.0f;
+        for (int i = 1; i < n; ++i) {
+            float d = (verts[i] - verts[i0]).lengthSq();
+            if (d > maxD) {
+                maxD = d;
+                i1 = i;
+            }
+        }
+        if (i1 < 0) return;
+
+        maxD = 0.0f;
+        Vec3 ab = verts[i1] - verts[i0];
+        for (int i = 0; i < n; ++i) {
+            Vec3 ap = verts[i] - verts[i0];
+            Vec3 c = Vec3::cross(ab, ap);
+            float d = c.lengthSq();
+            if (d > maxD) {
+                maxD = d;
+                i2 = i;
+            }
+        }
+        if (i2 < 0) return;
+
+        Vec3 nrm = faceNormal(verts[i0], verts[i1], verts[i2]);
+        maxD = 0.0f;
+        for (int i = 0; i < n; ++i) {
+            float d = std::fabs(Vec3::dot(nrm, verts[i] - verts[i0]));
+            if (d > maxD) {
+                maxD = d;
+                i3 = i;
+            }
+        }
+        if (i3 < 0) return;
+
+        tris.push_back({i0, i1, i2});
+        tris.push_back({i0, i3, i1});
+        tris.push_back({i0, i2, i3});
+        tris.push_back({i1, i3, i2});
+
+        for (int p = 0; p < n; ++p) {
+            if (p == i0 || p == i1 || p == i2 || p == i3) continue;
+
+            std::vector<int> visible;
+            for (int t = 0; t < (int)tris.size(); ++t) {
+                const Tri& f = tris[t];
+                Vec3 normal = faceNormal(verts[f.a], verts[f.b], verts[f.c] );
+                if (pointOutsideFace(verts[p], verts[f.a], normal)) { visible.push_back(t); }
+            }
+
+            if (visible.empty()) continue;
+
+            std::vector<Edge> boundary;
+            auto addBoundary = [&](int a, int b) {
+                for (auto it = boundary.begin(); it != boundary.end(); ++it) {
+                    if (it->a == b && it->b == a) {
+                        boundary.erase(it);
+                        return;
+                    }
+                }
+                boundary.push_back({a, b});
+            };
+
+            for (int idx : visible) {
+                const Tri& f = tris[idx];
+                addBoundary(f.a, f.b);
+                addBoundary(f.b, f.c);
+                addBoundary(f.c, f.a);
+            }
+
+            for (int i = (int)visible.size() - 1; i >= 0; --i) { tris.erase(tris.begin() + visible[i]); }
+            for (const Edge& e : boundary) { tris.push_back({e.a, e.b, p}); }
+        }
+		
+        for (const auto& t : tris) {
+            addEdgeUnique(t.a, t.b);
+            addEdgeUnique(t.b, t.c);
+            addEdgeUnique(t.c, t.a);
+        }
+    }
 };

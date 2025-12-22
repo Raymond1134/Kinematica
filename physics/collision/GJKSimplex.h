@@ -8,16 +8,13 @@ inline bool handleLine(Simplex& simplex, Vec3& direction) {
     // A is newest point
     SupportPoint A = simplex.verts[0];
     SupportPoint B = simplex.verts[1];
-
     Vec3 AB = B.p - A.p;
     Vec3 AO = -A.p;
 
     if (Vec3::dot(AB, AO) > 0.0f) {
-        direction = Vec3::cross(
-            Vec3::cross(AB, AO),
-            AB
-        );
-    } else {
+        direction = Vec3::cross(Vec3::cross(AB, AO), AB);
+    }
+    else {
         simplex.verts[0] = A;
         simplex.size = 1;
         direction = AO;
@@ -31,7 +28,6 @@ inline bool handleTriangle(Simplex& simplex, Vec3& direction) {
     SupportPoint A = simplex.verts[0];
     SupportPoint B = simplex.verts[1];
     SupportPoint C = simplex.verts[2];
-
     Vec3 AO = -A.p;
     Vec3 AB = B.p - A.p;
     Vec3 AC = C.p - A.p;
@@ -66,14 +62,11 @@ inline bool handleTriangle(Simplex& simplex, Vec3& direction) {
 
 // Handle tetrahedron simplex (4 points)
 inline bool handleTetrahedron(Simplex& simplex, Vec3& direction) {
-    // A is newest point
     SupportPoint A = simplex.verts[0];
     SupportPoint B = simplex.verts[1];
     SupportPoint C = simplex.verts[2];
     SupportPoint D = simplex.verts[3];
-
     Vec3 AO = -A.p;
-
     Vec3 ABC = Vec3::cross(B.p - A.p, C.p - A.p);
     Vec3 ACD = Vec3::cross(C.p - A.p, D.p - A.p);
     Vec3 ADB = Vec3::cross(D.p - A.p, B.p - A.p);

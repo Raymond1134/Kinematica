@@ -11,20 +11,15 @@ struct GJKResult {
     Simplex simplex;
 };
 
-inline GJKResult gjk(
-    const RigidBody& A,
-    const RigidBody& B
-) {
+inline GJKResult gjk(const RigidBody& A, const RigidBody& B) {
     GJKResult result;
     Simplex simplex;
-
     Vec3 direction = {1.0f, 0.0f, 0.0f};
-
     SupportPoint v = supportPoint(A, B, direction);
+
     simplex.pushFront(v);
     direction = -v.p;
 
-    // Safety limits
     const int MAX_ITERATIONS = 32;
 
     for (int iter = 0; iter < MAX_ITERATIONS; ++iter) {
@@ -43,12 +38,8 @@ inline GJKResult gjk(
 
         simplex.pushFront(v);
 
-        if (simplex.size == 2) {
-            handleLine(simplex, direction);
-        }
-        else if (simplex.size == 3) {
-            handleTriangle(simplex, direction);
-        }
+        if (simplex.size == 2) { handleLine(simplex, direction); }
+        else if (simplex.size == 3) { handleTriangle(simplex, direction); }
         else if (simplex.size == 4) {
             if (handleTetrahedron(simplex, direction)) {
                 result.hit = true;
@@ -63,9 +54,4 @@ inline GJKResult gjk(
     return result;
 }
 
-inline bool gjkIntersect(
-    const RigidBody& A,
-    const RigidBody& B
-) {
-    return gjk(A, B).hit;
-}
+inline bool gjkIntersect(const RigidBody& A, const RigidBody& B) { return gjk(A, B).hit; }

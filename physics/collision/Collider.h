@@ -7,26 +7,19 @@
 #include "shapes/CapsuleShape.h"
 #include "shapes/PolyhedronShape.h"
 #include "shapes/ConvexShape.h"
+
 #include <vector>
 #include <algorithm>
 #include <cassert>
 #include <memory>
 
-enum class ColliderType {
-    Sphere,
-    Box,
-    Capsule,
-    Convex,
-    Mesh,
-    Compound
-};
+enum class ColliderType {Sphere, Box, Capsule, Convex, Mesh, Compound};
 
 struct CompoundChild;
 struct CompoundShape;
 
 struct Collider : public ConvexShape {
     ColliderType type;
-
     SphereShape sphere;
     BoxShape box;
     CapsuleShape capsule;
@@ -64,12 +57,7 @@ struct Collider : public ConvexShape {
 
     static Collider createCompound(const std::vector<CompoundChild>& children);
 
-    bool isConvex() const noexcept {
-        return type == ColliderType::Sphere ||
-               type == ColliderType::Box ||
-               type == ColliderType::Capsule ||
-               type == ColliderType::Convex;
-    }
+    bool isConvex() const noexcept { return type == ColliderType::Sphere || type == ColliderType::Box || type == ColliderType::Capsule || type == ColliderType::Convex; }
 
     float boundingRadius() const noexcept {
         switch (type) {

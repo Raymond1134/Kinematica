@@ -10,9 +10,7 @@ struct Simplex {
 
     void pushFront(const SupportPoint& v) {
         const int newSize = (size < 4) ? (size + 1) : 4;
-        for (int i = newSize - 1; i > 0; --i) {
-            verts[i] = verts[i - 1];
-        }
+        for (int i = newSize - 1; i > 0; --i) { verts[i] = verts[i - 1]; }
         verts[0] = v;
         size = newSize;
     }
