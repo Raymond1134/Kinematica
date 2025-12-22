@@ -18,9 +18,9 @@ public:
 
     // Continuous Collision Detection (CCD). This is a foundation for later TOI-based CCD.
     bool enableCCD = true;
-    int ccdMaxSubsteps = 32;
-    float ccdMaxTranslationFraction = 0.15f;
-    float ccdMinCharacteristicRadius = 0.05f;
+    int ccdMaxSubsteps = 24;
+    float ccdMaxTranslationFraction = 0.18f;
+    float ccdMinCharacteristicRadius = 0.04f;
 
     bool enableSplitImpulse = true;
     int ompMinBodiesForParallel = 24;
@@ -55,18 +55,18 @@ public:
     float floorContactAngularDampingPerSecond = 1.00f;
 
     // Contact-only damping for tiny residual jitter in resting stacks.
-    float contactLinearDampingPerSecond = 3.25f;
-    float contactAngularDampingPerSecond = 4.25f;
-    float contactDampingMaxSpeed = 0.50f;
-    float contactDampingMaxAngularSpeed = 1.60f;
+    float contactLinearDampingPerSecond = 2.00f;
+    float contactAngularDampingPerSecond = 2.50f;
+    float contactDampingMaxSpeed = 0.40f;
+    float contactDampingMaxAngularSpeed = 1.20f;
 
     // Hard deadzone for resting contacts
-    float contactRestVelKill = 0.01f;
-    float contactRestAngVelKill = 0.03f;
+    float contactRestVelKill = 0.005f;
+    float contactRestAngVelKill = 0.015f;
 
     // Extra friction-only passes for resting contacts.
-    int restingFrictionExtraPasses = 8;
-    float restingMaxNormalSpeed = 0.15f;
+    int restingFrictionExtraPasses = 6;
+    float restingMaxNormalSpeed = 0.12f;
     float restingMaxBodySpeed = 0.60f;
     float restingMaxBodyAngularSpeed = 2.50f;
 
@@ -77,7 +77,7 @@ public:
     uint32_t frameId = 1;
 
     struct ContactPointState {
-        Vec3 pointWorld;
+        Vec3 pointWorld; 
         float penetration = 0.0f;
         float targetNormalVelocity = 0.0f;
         float normalImpulse = 0.0f;

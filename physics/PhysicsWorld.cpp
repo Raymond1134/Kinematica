@@ -161,9 +161,9 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
     auto tSolve1 = clock::now();
     perf.solveMs += std::chrono::duration<float, std::milli>(tSolve1 - tSolve0).count();
 
-    const float sleepLinear = 0.035f;
-    const float sleepAngular = 0.020f;
-    const float sleepTime = 0.30f;
+    const float sleepLinear = 0.025f;
+    const float sleepAngular = 0.015f;
+    const float sleepTime = 0.35f;
     for (RigidBody* body: bodies) {
         if (!body) continue;
         if (body->isStatic) continue;
@@ -225,7 +225,7 @@ void PhysicsWorld::reduceManifoldTo2(ContactManifold& m) {
     }
 
     int farthest = -1;
-    float bestD2 = -1.0f;
+    float bestD2 = 0.0f;
     const Vec3 p0 = m.points[deepest].pointWorld;
     for (int i = 0; i < m.count; ++i) {
         if (i == deepest) continue;
@@ -237,8 +237,12 @@ void PhysicsWorld::reduceManifoldTo2(ContactManifold& m) {
         }
     }
 
+    if (farthest < 0 || bestD2 < 1e-6f) {
+        farthest = (deepest == 0) ? 1 : 0;
+    }
+
     ContactPointState a = m.points[deepest];
-    ContactPointState b = (farthest >= 0) ? m.points[farthest] : m.points[(deepest == 0) ? 1 : 0];
+    ContactPointState b = m.points[farthest];
     m.points[0] = a;
     m.points[1] = b;
     m.count = 2;
@@ -290,7 +294,7 @@ void PhysicsWorld::buildFrictionBasis(const Vec3& n, Vec3& t1, Vec3& t2) {
 }
 
 PhysicsWorld::ContactKey PhysicsWorld::makeContactKey(const RigidBody* a, const RigidBody* b, const Vec3& pWorld) {
-    constexpr float q = 50.0f;
+    constexpr float q = 80.0f;
     auto qi = [&](float v) -> int32_t {
         if (!std::isfinite(v)) return 0;
         return (int32_t)lrintf(v * q);
@@ -651,11 +655,11 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
 }
 
 void PhysicsWorld::warmStartContacts(std::vector<ContactManifold>& ms) {
-    constexpr float warmN = 0.90f;
-    constexpr float warmT = 0.55f;
-    constexpr float warmW = 0.55f;
+    constexpr float warmN = 0.95f;
+    constexpr float warmT = 0.70f;
+    constexpr float warmW = 0.70f;
 
-    constexpr float minNormalAlign = 0.80f;
+    constexpr float minNormalAlign = 0.85f;
     constexpr float minTwistAlign = 0.95f;
 
     for (ContactManifold& m : ms) {
@@ -734,7 +738,7 @@ void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const Rigid
 
     const TriangleMesh& mesh = *meshBody->collider.mesh;
     const bool upwardOnly = (mesh.flags & TriangleMesh::CollideUpwardOnly) != 0;
-    const float minUp = 0.15f;
+    const float minUp = 0.10f;
     const Vec3 he = boxBody->collider.box.halfExtents;
 
     Vec3 boxCenterM = meshBody->orientation.rotateInv(boxBody->position - meshBody->position);
@@ -783,7 +787,7 @@ void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const Rigid
     clusters.reserve(8);
 
     auto tryAddCluster = [&](const Vec3& nLocalIn, const Vec3& a, const Vec3& b, const Vec3& c, float pen) {
-        constexpr float sameNormalCos = 0.95f;
+        constexpr float sameNormalCos = 0.98f;
         for (Cluster& cl : clusters) {
             if (Vec3::dot(cl.nLocal, nLocalIn) >= sameNormalCos) {
                 if (pen > cl.pen) {
@@ -928,7 +932,7 @@ void PhysicsWorld::appendMeshConvexManifolds(const RigidBody* meshBody, const Ri
 
     const TriangleMesh& mesh = *meshBody->collider.mesh;
     const bool upwardOnly = (mesh.flags & TriangleMesh::CollideUpwardOnly) != 0;
-    const float minUp = 0.15f;
+    const float minUp = 0.10f;
 
     Vec3 convexCenterM = meshBody->orientation.rotateInv(convexBody->position - meshBody->position);
 
@@ -962,7 +966,7 @@ void PhysicsWorld::appendMeshConvexManifolds(const RigidBody* meshBody, const Ri
     clusters.reserve(8);
 
     auto tryAddCluster = [&](const Vec3& nLocalIn, const Vec3& a, const Vec3& b, const Vec3& c, float pen) {
-        constexpr float sameNormalCos = 0.95f;
+        constexpr float sameNormalCos = 0.98f;
         for (Cluster& cl : clusters) {
             if (Vec3::dot(cl.nLocal, nLocalIn) >= sameNormalCos) {
                 if (pen > cl.pen) {
@@ -1079,6 +1083,7 @@ void PhysicsWorld::appendMeshConvexManifolds(const RigidBody* meshBody, const Ri
             float dist = bestV[k].dist;
             float pen = -dist;
             if (pen < 1e-5f) pen = 1e-5f;
+            if (pen > 0.5f) pen = 0.5f;
 
             Vec3 vM = vertsM[vi];
             Vec3 pPlane = vM - nLocal * dist;
@@ -1574,7 +1579,7 @@ bool PhysicsWorld::collideBoxBox(RigidBody* a, RigidBody* b, ContactManifold& m)
 }
 
 void PhysicsWorld::computeRestitutionTargets(std::vector<ContactManifold>& ms) {
-    constexpr float restitutionVelThreshold = 0.05f;
+    constexpr float restitutionVelThreshold = 0.08f;
     for (ContactManifold& m : ms) {
         if (!m.a) continue;
         for (int i = 0; i < m.count; ++i) {
@@ -1589,18 +1594,24 @@ void PhysicsWorld::computeRestitutionTargets(std::vector<ContactManifold>& ms) {
             }
             Vec3 relV = vB - vA;
             float vn = Vec3::dot(relV, m.normal);
-            cp.targetNormalVelocity = (vn < -restitutionVelThreshold) ? (-m.restitution * vn) : 0.0f;
+            if (vn < -restitutionVelThreshold) {
+                cp.targetNormalVelocity = -m.restitution * vn;
+            } else if (vn < 0.0f) {
+                float speedRatio = (-vn) / restitutionVelThreshold;
+                float restitutionScale = speedRatio * speedRatio;
+                cp.targetNormalVelocity = -m.restitution * vn * restitutionScale;
+            } else {
+                cp.targetNormalVelocity = 0.0f;
+            }
         }
     }
 }
 
 void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPositionCorrection) {
-    constexpr float slop = 0.005f;
-    constexpr float maxPositionCorrection = 0.08f;
-    constexpr float baumgarte = 0.35f;
-    constexpr float maxBias = 3.0f;
-    constexpr float shockLowerInvScale = 0.25f;
-    constexpr float shockNormalY = 0.55f;
+    constexpr float slop = 0.008f;
+    constexpr float maxPositionCorrection = 0.05f;
+    constexpr float shockLowerInvScale = 0.35f;
+    constexpr float shockNormalY = 0.65f;
 
     for (ContactManifold& m : ms) {
         if (!m.a) continue;
@@ -1645,7 +1656,7 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
             if (corrMag > maxPositionCorrection) corrMag = maxPositionCorrection;
 
             if (corrMag > 0.0f) {
-                float corrRatio = (m.b == nullptr || m.b->isStatic) ? 0.80f : 0.65f;
+                float corrRatio = (m.b == nullptr || m.b->isStatic) ? 0.70f : 0.55f;
                 Vec3 corr = m.normal * (corrMag * corrRatio);
                 if (m.b) {
                     if (!m.a->isStatic) m.a->position = m.a->position - corr * (invMassA / totalInvMass);
@@ -1658,8 +1669,9 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
 
         float invCount = 1.0f / (float)m.count;
         float supportImpulse = 0.0f;
-        if (totalInvMass > 1e-6f) {
-            supportImpulse = (fabsf(gravity.y) * currentDt / totalInvMass) * invCount;
+        if (totalInvMass > 1e-6f && m.count > 0) {
+            float gravityMag = gravity.length();
+            supportImpulse = (gravityMag * currentDt / totalInvMass) * invCount * 0.5f;
         }
 
         for (int ci = 0; ci < m.count; ++ci) {
@@ -1682,9 +1694,8 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
             if (denomN < 1e-6f) continue;
 
             float bias = 0.0f;
-            if (!enableSplitImpulse && cp.penetration > slop && currentDt > 1e-6f) {
-                bias = baumgarte * (cp.penetration - slop) / currentDt;
-                if (bias > maxBias) bias = maxBias;
+            if (cp.penetration > slop) {
+                bias = (cp.penetration - slop) * 0.15f;
             }
 
             float desired = -(vn - (cp.targetNormalVelocity + bias)) / denomN;
@@ -1707,7 +1718,11 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
             relV = vB - vA;
 
             Vec3 t1, t2;
-            PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
+            if (ci == 0) {
+                PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
+            } else {
+                PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
+            }
 
             float oldT1 = Vec3::dot(cp.tangentImpulse, t1);
             float oldT2 = Vec3::dot(cp.tangentImpulse, t2);
@@ -1811,9 +1826,9 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
 void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int passes) {
     if (passes <= 0) return;
 
-    constexpr float slop = 0.005f;
-    constexpr float shockLowerInvScale = 0.25f;
-    constexpr float shockNormalY = 0.55f;
+    constexpr float slop = 0.008f;
+    constexpr float shockLowerInvScale = 0.35f;
+    constexpr float shockNormalY = 0.65f;
 
     for (int pass = 0; pass < passes; ++pass) {
         for (ContactManifold& m : ms) {
@@ -2427,7 +2442,7 @@ bool PhysicsWorld::collideMeshSphere(const RigidBody* meshBody, const RigidBody*
 
     const TriangleMesh& mesh = *meshBody->collider.mesh;
     const bool upwardOnly = (mesh.flags & TriangleMesh::CollideUpwardOnly) != 0;
-    const float minUp = 0.15f;
+    const float minUp = 0.10f;
     const float r = sphereBody->collider.sphere.radius;
 
     Vec3 cLocal = meshBody->orientation.rotateInv(sphereBody->position - meshBody->position);
@@ -2468,9 +2483,10 @@ bool PhysicsWorld::collideMeshSphere(const RigidBody* meshBody, const RigidBody*
         float dist = sqrtf(std::max(0.0f, distSq));
         float pen = r - dist;
         if (pen < 1e-5f) pen = 1e-5f;
+        if (pen > r * 0.9f) pen = r * 0.9f;
 
         Vec3 nLocal;
-        if (dist > 1e-6f) {
+        if (dist > 1e-5f) {
             nLocal = d / dist;
         } else {
             Vec3 n = Vec3::cross(b - a, c - a);
@@ -2516,7 +2532,7 @@ bool PhysicsWorld::collideMeshCapsule(const RigidBody* meshBody, const RigidBody
     if (!meshBody->collider.mesh) return false;
     const TriangleMesh& mesh = *meshBody->collider.mesh;
     const bool upwardOnly = (mesh.flags & TriangleMesh::CollideUpwardOnly) != 0;
-    const float minUp = 0.15f;
+    const float minUp = 0.10f;
 
     const float rc = capsuleBody->collider.capsule.radius;
     const float hh = capsuleBody->collider.capsule.halfHeight;
@@ -2610,10 +2626,11 @@ bool PhysicsWorld::collideMeshCapsule(const RigidBody* meshBody, const RigidBody
         float dist = sqrtf(std::max(0.0f, distSq));
         float pen = rc - dist;
         if (pen < 1e-5f) pen = 1e-5f;
+        if (pen > rc * 0.9f) pen = rc * 0.9f;
 
         Vec3 d = segPt - triPt;
         Vec3 nLocal;
-        if (dist > 1e-6f) nLocal = d / dist;
+        if (dist > 1e-5f) nLocal = d / dist;
         else {
             Vec3 n = Vec3::cross(b - a, c - a);
             if (n.lengthSq() < 1e-12f) nLocal = {0.0f, 1.0f, 0.0f};
