@@ -42,7 +42,37 @@ struct RigidBody {
             };
         }
 
-        if (collider.type == ColliderType::Convex || collider.type == ColliderType::Compound) {
+        if (collider.type == ColliderType::Convex) {
+            if (collider.polyhedron && !collider.polyhedron->verts.empty()) {
+                Vec3 mn = collider.polyhedron->verts[0];
+                Vec3 mx = collider.polyhedron->verts[0];
+                for (const Vec3& v : collider.polyhedron->verts) {
+                    mn.x = std::min(mn.x, v.x); mn.y = std::min(mn.y, v.y); mn.z = std::min(mn.z, v.z);
+                    mx.x = std::max(mx.x, v.x); mx.y = std::max(mx.y, v.y); mx.z = std::max(mx.z, v.z);
+                }
+                Vec3 h = (mx - mn) * 0.5f;
+                h.x = std::max(h.x, 0.001f);
+                h.y = std::max(h.y, 0.001f);
+                h.z = std::max(h.z, 0.001f);
+
+                float Ixx = (1.0f / 3.0f) * mass * (h.y * h.y + h.z * h.z);
+                float Iyy = (1.0f / 3.0f) * mass * (h.x * h.x + h.z * h.z);
+                float Izz = (1.0f / 3.0f) * mass * (h.x * h.x + h.y * h.y);
+                return {
+                    (Ixx > 0.0001f) ? (1.0f / Ixx) : 0.0f,
+                    (Iyy > 0.0001f) ? (1.0f / Iyy) : 0.0f,
+                    (Izz > 0.0001f) ? (1.0f / Izz) : 0.0f,
+                };
+            }
+
+            float r = collider.boundingRadius();
+            float I = 0.4f * mass * r * r;
+            if (I <= 0.0001f) return {0.0f, 0.0f, 0.0f};
+            float inv = 1.0f / I;
+            return {inv, inv, inv};
+        }
+
+        if (collider.type == ColliderType::Compound) {
             float r = collider.boundingRadius();
             float I = 0.4f * mass * r * r;
             if (I <= 0.0001f) return {0.0f, 0.0f, 0.0f};
@@ -65,8 +95,16 @@ struct RigidBody {
         }
 
         if (collider.type == ColliderType::Mesh) {
-            assert(false && "RigidBody inertia for Mesh collider not implemented");
-            return {0.0f, 0.0f, 0.0f};
+            if (!collider.mesh) return {0.0f, 0.0f, 0.0f};
+            Vec3 h = collider.mesh->localHalfExtents();
+            float Ixx = (1.0f / 3.0f) * mass * (h.y * h.y + h.z * h.z);
+            float Iyy = (1.0f / 3.0f) * mass * (h.x * h.x + h.z * h.z);
+            float Izz = (1.0f / 3.0f) * mass * (h.x * h.x + h.y * h.y);
+            return {
+                (Ixx > 0.0001f) ? (1.0f / Ixx) : 0.0f,
+                (Iyy > 0.0001f) ? (1.0f / Iyy) : 0.0f,
+                (Izz > 0.0001f) ? (1.0f / Izz) : 0.0f,
+            };
         }
 
         return {0.0f, 0.0f, 0.0f};

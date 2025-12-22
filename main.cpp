@@ -1,6 +1,7 @@
 #include "physics/PhysicsWorld.h"
 #include "physics/RigidBody.h"
 #include "physics/Spring.h"
+#include "physics/collision/TriangleMesh.h"
 #include "render/Renderer.h"
 #include <chrono>
 #include <raylib.h>
@@ -134,7 +135,57 @@ enum class SpawnShape {
     Tetrahedron,
     Bipyramid,
     Dodecahedron,
+    Ramp,
 };
+
+static std::shared_ptr<TriangleMesh> makeRampMesh(float width, float length, float height) {
+    float w = std::max(0.01f, width);
+    float l = std::max(0.01f, length);
+    float h = std::max(0.0f, height);
+
+    std::vector<Vec3> v;
+    v.reserve(6);
+    v.push_back({-0.5f * w, 0.0f, -0.5f * l});
+    v.push_back({+0.5f * w, 0.0f, -0.5f * l});
+    v.push_back({+0.5f * w, 0.0f, +0.5f * l});
+    v.push_back({-0.5f * w, 0.0f, +0.5f * l});
+    v.push_back({+0.5f * w, h,    +0.5f * l});
+    v.push_back({-0.5f * w, h,    +0.5f * l});
+
+    std::vector<uint32_t> idx;
+    idx.reserve(10 * 3);
+    idx.insert(idx.end(), {0, 4, 1, 0, 5, 4});
+    idx.insert(idx.end(), {0, 3, 5});
+    idx.insert(idx.end(), {1, 4, 2});
+    idx.insert(idx.end(), {2, 4, 5, 2, 5, 3});
+    idx.insert(idx.end(), {0, 1, 2, 0, 2, 3});
+
+    auto m = std::make_shared<TriangleMesh>();
+    m->build(v, idx);
+    m->flags |= TriangleMesh::CollideUpwardOnly;
+    return m;
+}
+
+static std::shared_ptr<TriangleMesh> makeRampCollisionMesh(float width, float length, float height) {
+    float w = std::max(0.01f, width);
+    float l = std::max(0.01f, length);
+    float h = std::max(0.0f, height);
+
+    std::vector<Vec3> v;
+    v.reserve(4);
+    v.push_back({-0.5f * w, 0.0f, -0.5f * l});
+    v.push_back({+0.5f * w, 0.0f, -0.5f * l});
+    v.push_back({+0.5f * w, h,    +0.5f * l});
+    v.push_back({-0.5f * w, h,    +0.5f * l});
+
+    std::vector<uint32_t> idx;
+    idx.reserve(6);
+    idx.insert(idx.end(), {0, 1, 2, 0, 2, 3});
+
+    auto m = std::make_shared<TriangleMesh>();
+    m->build(v, idx);
+    return m;
+}
 
 static std::vector<Vec3> makeTetraVerts(float s) {
     return {
@@ -328,6 +379,7 @@ int main() {
         physicsWorld.floorRestitution = std::clamp(floorMaterial.restitution, 0.0f, 1.0f);
 
         if (IsKeyPressed(KEY_Q)) {
+            const bool shiftDown = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
             Vec3 camPos = renderer.getCameraPosition();
             Vec3 camFwd = renderer.getCameraForward();
 
@@ -393,6 +445,34 @@ int main() {
                     auto verts = makeDodecaVerts(s);
                     b.collider = Collider::createConvex(verts);
                     volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
+                    break;
+                }
+                case SpawnShape::Ramp: {
+                    float width = 2.5f * s;
+                    float length = 4.0f * s;
+                    float height = 1.4f * s;
+                    auto rampRender = makeRampMesh(width, length, height);
+                    auto rampCollision = shiftDown ? rampRender : makeRampCollisionMesh(width, length, height);
+                    b.collider = Collider::createMesh(rampCollision, rampRender);
+
+                    Vec3 f = {camFwd.x, 0.0f, camFwd.z};
+                    if (f.lengthSq() < 1e-8f) f = {0.0f, 0.0f, 1.0f};
+                    f = f.normalized();
+                    float yaw = atan2f(f.x, f.z);
+                    Quat qYaw = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw);
+                    b.orientation = qYaw.normalized();
+
+                    b.position = {camPos.x + f.x * 4.0f, physicsWorld.floorY + 0.001f, camPos.z + f.z * 4.0f};
+                    b.velocity = {0.0f, 0.0f, 0.0f};
+                    b.angularVelocity = {0.0f, 0.0f, 0.0f};
+                    b.isStatic = !shiftDown;
+                    b.sleeping = !shiftDown;
+                    b.sleepTimer = shiftDown ? 0.0f : 1.0f;
+                    if (shiftDown) {
+                        b.position.y = physicsWorld.floorY + height + 1.0f;
+                    }
+
+                    volume = width * length * std::max(0.01f, height) * 0.5f;
                     break;
                 }
             }
@@ -465,6 +545,7 @@ int main() {
             shapeRadio(SpawnShape::Tetrahedron, "Tetrahedron");
             shapeRadio(SpawnShape::Bipyramid, "Bipyramid");
             shapeRadio(SpawnShape::Dodecahedron, "Dodecahedron");
+            shapeRadio(SpawnShape::Ramp, "Ramp");
 
             y += 8.0f;
             DrawText("Size", (int)x, (int)y, 18, RAYWHITE);
@@ -577,7 +658,7 @@ int main() {
             Rectangle footer = {panel.x, panel.y + panel.height - footerH, panel.width, footerH};
             DrawRectangleRec(footer, Color{18, 18, 18, 245});
             DrawRectangleLinesEx(footer, 1.0f, Color{60, 60, 60, 255});
-            DrawText("Press Q to spawn", (int)(panel.x + pad), (int)(footer.y + 12.0f), 18, RAYWHITE);
+            DrawText("Q spawn | Shift+Q: dynamic ramp (mesh-floor)", (int)(panel.x + pad), (int)(footer.y + 12.0f), 18, RAYWHITE);
         }
 
         renderer.endFrame();

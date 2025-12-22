@@ -9,6 +9,7 @@ set(SOURCES
     main.cpp
     render/Renderer.cpp
     physics/PhysicsWorld.cpp
+    physics/collision/TriangleMesh.cpp
 )
 
 

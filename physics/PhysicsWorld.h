@@ -16,6 +16,12 @@ class PhysicsWorld {
 public:
     PhysicsWorld();
 
+    // Continuous Collision Detection (CCD). This is a foundation for later TOI-based CCD.
+    bool enableCCD = true;
+    int ccdMaxSubsteps = 32;
+    float ccdMaxTranslationFraction = 0.15f;
+    float ccdMinCharacteristicRadius = 0.05f;
+
     bool enableSplitImpulse = true;
     int ompMinBodiesForParallel = 24;
     int ompMinPairsForParallel = 96;
@@ -55,8 +61,8 @@ public:
     float contactDampingMaxAngularSpeed = 1.60f;
 
     // Hard deadzone for resting contacts
-    float contactRestVelKill = 0.02f;
-    float contactRestAngVelKill = 0.06f;
+    float contactRestVelKill = 0.01f;
+    float contactRestAngVelKill = 0.03f;
 
     // Extra friction-only passes for resting contacts.
     int restingFrictionExtraPasses = 8;
@@ -189,6 +195,15 @@ public:
     bool collideCapsuleSphere(RigidBody* capsuleBody, RigidBody* sphereBody, ContactManifold& m);
     bool collideCapsuleCapsule(RigidBody* a, RigidBody* b, ContactManifold& m);
     bool collideBoxBox(RigidBody* a, RigidBody* b, ContactManifold& m);
+    void appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out);
+    void appendMeshBoxManifolds(const RigidBody* meshBody, const RigidBody* boxBody, std::vector<ContactManifold>& out, int maxManifolds) const;
+    void appendMeshConvexManifolds(const RigidBody* meshBody, const RigidBody* convexBody, std::vector<ContactManifold>& out, int maxManifolds) const;
+    bool collideMeshSphere(const RigidBody* meshBody, const RigidBody* sphereBody, ContactManifold& m) const;
+    bool collideMeshCapsule(const RigidBody* meshBody, const RigidBody* capsuleBody, ContactManifold& m) const;
+    bool collideMeshBox(const RigidBody* meshBody, const RigidBody* boxBody, ContactManifold& m) const;
+    static bool pointInTri(const Vec3& p, const Vec3& a, const Vec3& b, const Vec3& c);
+    static Vec3 closestPtPointTriangle(const Vec3& p, const Vec3& a, const Vec3& b, const Vec3& c);
+
     void computeRestitutionTargets(std::vector<ContactManifold>& ms);
     void solveContacts(std::vector<ContactManifold>& ms, bool applyPositionCorrection);
     void solveRestingFriction(std::vector<ContactManifold>& ms, int passes);
@@ -200,4 +215,8 @@ public:
     void applyImpulseAtPoint(RigidBody* body, const Vec3& impulse, const Vec3& pointWorld, bool wake = true);
     void applyAngularImpulse(RigidBody* body, const Vec3& angularImpulseWorld, bool wake = true);
     float characteristicContactRadius(const RigidBody* body) const;
+
+private:
+    void stepSubstep(float deltaTime, bool isFinalSubstep);
+    int computeCcdSubsteps(float deltaTime) const;
 };

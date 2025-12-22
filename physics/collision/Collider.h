@@ -7,6 +7,7 @@
 #include "shapes/CapsuleShape.h"
 #include "shapes/PolyhedronShape.h"
 #include "shapes/ConvexShape.h"
+#include "TriangleMesh.h"
 
 #include <vector>
 #include <algorithm>
@@ -24,7 +25,8 @@ struct Collider : public ConvexShape {
     BoxShape box;
     CapsuleShape capsule;
     std::shared_ptr<PolyhedronShape> polyhedron;
-    std::shared_ptr<void> mesh;
+    std::shared_ptr<TriangleMesh> mesh;
+    std::shared_ptr<TriangleMesh> renderMesh;
     float meshBoundRadius = 0.0f;
     std::shared_ptr<CompoundShape> compound;
     float compoundBoundRadius = 0.0f;
@@ -56,11 +58,12 @@ struct Collider : public ConvexShape {
         return c;
     }
 
-    static Collider createMesh(std::shared_ptr<void> meshPtr, float boundRadius) {
+    static Collider createMesh(std::shared_ptr<TriangleMesh> meshPtr, std::shared_ptr<TriangleMesh> renderMeshPtr = nullptr) {
         Collider c;
         c.type = ColliderType::Mesh;
         c.mesh = std::move(meshPtr);
-        c.meshBoundRadius = boundRadius;
+        c.renderMesh = std::move(renderMeshPtr);
+        c.meshBoundRadius = (c.mesh) ? c.mesh->boundRadius : 0.0f;
         return c;
     }
 
@@ -79,8 +82,8 @@ struct Collider : public ConvexShape {
             case ColliderType::Convex:
                 return polyhedron ? polyhedron->boundRadius : 0.0f;
             case ColliderType::Mesh:
-                assert(meshBoundRadius > 0.0f && "Mesh collider missing meshBoundRadius; use createMesh(..., boundRadius)");
-                return meshBoundRadius;
+                assert(mesh && "Mesh collider missing mesh data; use createMesh(meshPtr)");
+                return (meshBoundRadius > 0.0f) ? meshBoundRadius : mesh->boundRadius;
             case ColliderType::Compound:
                 return compoundBoundRadius;
         }

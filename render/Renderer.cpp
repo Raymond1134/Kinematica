@@ -111,7 +111,41 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
                 }
                 break;
             }
-            case ColliderType::Mesh:
+            case ColliderType::Mesh: {
+                if (!c.mesh) break;
+                const TriangleMesh& mesh = c.renderMesh ? *c.renderMesh : *c.mesh;
+
+                Color fill = body->isStatic ? Color{140, 140, 140, 255} : Color{60, 120, 200, 255};
+                rlBegin(RL_TRIANGLES);
+                rlColor4ub(fill.r, fill.g, fill.b, fill.a);
+                for (const auto& t : mesh.tris) {
+                    const Vec3& a = mesh.vertices[t.a];
+                    const Vec3& b = mesh.vertices[t.b];
+                    const Vec3& c0 = mesh.vertices[t.c];
+                    rlVertex3f(a.x, a.y, a.z);
+                    rlVertex3f(b.x, b.y, b.z);
+                    rlVertex3f(c0.x, c0.y, c0.z);
+
+                    rlVertex3f(a.x, a.y, a.z);
+                    rlVertex3f(c0.x, c0.y, c0.z);
+                    rlVertex3f(b.x, b.y, b.z);
+                }
+                rlEnd();
+
+                rlBegin(RL_LINES);
+                rlColor4ub(20, 20, 20, 220);
+                for (const auto& t : mesh.tris) {
+                    const Vec3& a = mesh.vertices[t.a];
+                    const Vec3& b = mesh.vertices[t.b];
+                    const Vec3& c0 = mesh.vertices[t.c];
+                    rlVertex3f(a.x, a.y, a.z); rlVertex3f(b.x, b.y, b.z);
+                    rlVertex3f(b.x, b.y, b.z); rlVertex3f(c0.x, c0.y, c0.z);
+                    rlVertex3f(c0.x, c0.y, c0.z); rlVertex3f(a.x, a.y, a.z);
+                }
+                rlEnd();
+
+                break;
+            }
             case ColliderType::Compound:
                 break;
         }
