@@ -152,7 +152,6 @@ void Renderer::drawConvex(const PolyhedronShape& poly, Color color) const {
         const Vec3& a = poly.verts[t.a];
         const Vec3& b = poly.verts[t.b];
         const Vec3& c = poly.verts[t.c];
-        // Double-sided like the old path.
         rlVertex3f(a.x, a.y, a.z);
         rlVertex3f(b.x, b.y, b.z);
         rlVertex3f(c.x, c.y, c.z);

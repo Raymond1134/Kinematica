@@ -14,7 +14,6 @@ struct PolyhedronShape {
 		int a, b;
 	};
 
-	// Render caches (built once in ctor). This avoids O(v^4) per-frame work.
 	std::vector<Tri> tris;
 	std::vector<Edge> edges;
 
@@ -36,8 +35,7 @@ struct PolyhedronShape {
 		edges.clear();
 		if (verts.size() < 4) return;
 
-		// Naive convex hull triangulation (same logic as the old Renderer::drawConvex),
-		// but done once at shape creation.
+		// Naive convex hull triangulation
 		for (size_t i = 0; i < verts.size(); ++i) {
 			for (size_t j = 0; j < verts.size(); ++j) {
 				if (j == i) continue;
