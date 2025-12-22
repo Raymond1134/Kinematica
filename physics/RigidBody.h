@@ -50,16 +50,25 @@ struct RigidBody {
             return {inv, inv, inv};
         }
 
-        float r = collider.capsule.radius;
-        float L = collider.capsule.halfHeight * 2.0f;
-        float Ixx = (1.0f / 12.0f) * mass * (3.0f * r * r + L * L);
-        float Iyy = 0.5f * mass * r * r;
-        float Izz = Ixx;
+        if (collider.type == ColliderType::Capsule) {
+            float r = collider.capsule.radius;
+            float L = collider.capsule.halfHeight * 2.0f;
+            float Ixx = (1.0f / 12.0f) * mass * (3.0f * r * r + L * L);
+            float Iyy = 0.5f * mass * r * r;
+            float Izz = Ixx;
 
-        return {
-            (Ixx > 0.0001f) ? (1.0f / Ixx) : 0.0f,
-            (Iyy > 0.0001f) ? (1.0f / Iyy) : 0.0f,
-            (Izz > 0.0001f) ? (1.0f / Izz) : 0.0f,
-        };
+            return {
+                (Ixx > 0.0001f) ? (1.0f / Ixx) : 0.0f,
+                (Iyy > 0.0001f) ? (1.0f / Iyy) : 0.0f,
+                (Izz > 0.0001f) ? (1.0f / Izz) : 0.0f,
+            };
+        }
+
+        if (collider.type == ColliderType::Mesh) {
+            assert(false && "RigidBody inertia for Mesh collider not implemented");
+            return {0.0f, 0.0f, 0.0f};
+        }
+
+        return {0.0f, 0.0f, 0.0f};
     }
 };

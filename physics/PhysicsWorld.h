@@ -55,8 +55,8 @@ public:
     float contactDampingMaxAngularSpeed = 1.60f;
 
     // Hard deadzone for resting contacts
-    float contactRestVelKill = 0.15f;
-    float contactRestAngVelKill = 0.35f;
+    float contactRestVelKill = 0.02f;
+    float contactRestAngVelKill = 0.06f;
 
     // Extra friction-only passes for resting contacts.
     int restingFrictionExtraPasses = 8;

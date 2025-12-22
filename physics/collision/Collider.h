@@ -25,6 +25,7 @@ struct Collider : public ConvexShape {
     CapsuleShape capsule;
     std::shared_ptr<PolyhedronShape> polyhedron;
     std::shared_ptr<void> mesh;
+    float meshBoundRadius = 0.0f;
     std::shared_ptr<CompoundShape> compound;
     float compoundBoundRadius = 0.0f;
 
@@ -55,6 +56,14 @@ struct Collider : public ConvexShape {
         return c;
     }
 
+    static Collider createMesh(std::shared_ptr<void> meshPtr, float boundRadius) {
+        Collider c;
+        c.type = ColliderType::Mesh;
+        c.mesh = std::move(meshPtr);
+        c.meshBoundRadius = boundRadius;
+        return c;
+    }
+
     static Collider createCompound(const std::vector<CompoundChild>& children);
 
     bool isConvex() const noexcept { return type == ColliderType::Sphere || type == ColliderType::Box || type == ColliderType::Capsule || type == ColliderType::Convex; }
@@ -70,51 +79,15 @@ struct Collider : public ConvexShape {
             case ColliderType::Convex:
                 return polyhedron ? polyhedron->boundRadius : 0.0f;
             case ColliderType::Mesh:
-                break;
+                assert(meshBoundRadius > 0.0f && "Mesh collider missing meshBoundRadius; use createMesh(..., boundRadius)");
+                return meshBoundRadius;
             case ColliderType::Compound:
                 return compoundBoundRadius;
         }
         return 0.0f;
     }
 
-    Vec3 support(const Vec3& dir) const override {
-        assert(isConvex() && "support() called on non-convex collider");
-
-        Vec3 d = dir.normalized();
-        switch (type) {
-            case ColliderType::Sphere:
-                return d * sphere.radius;
-            case ColliderType::Box:
-                return {
-                    d.x >= 0.0f ? box.halfExtents.x : -box.halfExtents.x,
-                    d.y >= 0.0f ? box.halfExtents.y : -box.halfExtents.y,
-                    d.z >= 0.0f ? box.halfExtents.z : -box.halfExtents.z
-                };
-            case ColliderType::Capsule: {
-                Vec3 axis = {0.0f, 1.0f, 0.0f};
-                float sign = Vec3::dot(d, axis) >= 0.0f ? 1.0f : -1.0f;
-                Vec3 capCenter = axis * (capsule.halfHeight * sign);
-                return capCenter + d * capsule.radius;
-            }
-            case ColliderType::Convex: {
-                assert(polyhedron && "Convex collider missing polyhedron");
-                float maxDot = -1e30f;
-                Vec3 best = {0,0,0};
-                for (const Vec3& v : polyhedron->verts) {
-                    float dot = Vec3::dot(v, d);
-                    if (dot > maxDot) {
-                        maxDot = dot;
-                        best = v;
-                    }
-                }
-                return best;
-            }
-            case ColliderType::Mesh:
-            case ColliderType::Compound:
-                break;
-        }
-        return {0, 0, 0};
-    }
+    Vec3 support(const Vec3& dir) const override;
 };
 
 struct CompoundChild {
@@ -127,11 +100,106 @@ struct CompoundShape {
     std::vector<CompoundChild> children;
 };
 
+inline Vec3 Collider::support(const Vec3& dir) const {
+    assert(type != ColliderType::Mesh && "support() called on mesh collider");
+
+    Vec3 d = dir.normalized();
+    switch (type) {
+        case ColliderType::Sphere:
+            return d * sphere.radius;
+        case ColliderType::Box:
+            return {
+                d.x >= 0.0f ? box.halfExtents.x : -box.halfExtents.x,
+                d.y >= 0.0f ? box.halfExtents.y : -box.halfExtents.y,
+                d.z >= 0.0f ? box.halfExtents.z : -box.halfExtents.z
+            };
+        case ColliderType::Capsule: {
+            Vec3 axis = {0.0f, 1.0f, 0.0f};
+            float sign = Vec3::dot(d, axis) >= 0.0f ? 1.0f : -1.0f;
+            Vec3 capCenter = axis * (capsule.halfHeight * sign);
+            return capCenter + d * capsule.radius;
+        }
+        case ColliderType::Convex: {
+            assert(polyhedron && "Convex collider missing polyhedron");
+            float maxDot = -1e30f;
+            Vec3 best = {0, 0, 0};
+            for (const Vec3& v : polyhedron->verts) {
+                float dot = Vec3::dot(v, d);
+                if (dot > maxDot) {
+                    maxDot = dot;
+                    best = v;
+                }
+            }
+            return best;
+        }
+        case ColliderType::Compound: {
+            if (!compound || compound->children.empty()) return {0.0f, 0.0f, 0.0f};
+            float bestDot = -1e30f;
+            Vec3 best = {0.0f, 0.0f, 0.0f};
+
+            for (const CompoundChild& child : compound->children) {
+                Vec3 dChild = child.localOrientation.rotateInv(d);
+                Vec3 pChildLocal = child.collider.support(dChild);
+                Vec3 pParentLocal = child.localPosition + child.localOrientation.rotate(pChildLocal);
+
+                float dd = Vec3::dot(pParentLocal, d);
+                if (dd > bestDot) {
+                    bestDot = dd;
+                    best = pParentLocal;
+                }
+            }
+
+            return best;
+        }
+        case ColliderType::Mesh:
+            break;
+    }
+    return {0, 0, 0};
+}
+
 inline Collider Collider::createCompound(const std::vector<CompoundChild>& children) {
     Collider c;
     c.type = ColliderType::Compound;
     c.compound = std::make_shared<CompoundShape>();
-    c.compound->children = children;
+
+    std::vector<CompoundChild> flat;
+    flat.reserve(children.size());
+
+    auto appendFlattened = [&](auto&& self, const CompoundChild& child, const Vec3& parentPos, const Quat& parentRot, int depth) -> void {
+        if (depth > 16) {
+            assert(false && "Compound collider nesting too deep");
+            return;
+        }
+
+        if (child.collider.type == ColliderType::Mesh) {
+            assert(false && "Mesh colliders are not supported as compound children");
+            return;
+        }
+
+        if (child.collider.type != ColliderType::Compound) {
+            CompoundChild out = child;
+            out.localPosition = parentPos + parentRot.rotate(child.localPosition);
+            out.localOrientation = (parentRot * child.localOrientation).normalized();
+            flat.push_back(out);
+            return;
+        }
+
+        if (!child.collider.compound) {
+            return;
+        }
+
+        Vec3 nextPos = parentPos + parentRot.rotate(child.localPosition);
+        Quat nextRot = (parentRot * child.localOrientation).normalized();
+        for (const CompoundChild& grand : child.collider.compound->children) {
+            self(self, grand, nextPos, nextRot, depth + 1);
+        }
+    };
+
+    for (const CompoundChild& child : children) {
+        appendFlattened(appendFlattened, child, {0.0f, 0.0f, 0.0f}, Quat::identity(), 0);
+    }
+
+    c.compound->children = std::move(flat);
 
     float r = 0.0f;
     for (const CompoundChild& child : c.compound->children) {

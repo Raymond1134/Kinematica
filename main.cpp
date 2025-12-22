@@ -27,9 +27,9 @@ int main() {
     Renderer renderer;
     if (!renderer.init(1280, 720, "Kinematica Sandbox")) return -1;
     {
-        constexpr int wallW = 20;
-        constexpr int wallH = 20;
-        const Vec3 half = {0.1f, 0.1f, 0.1f};
+        constexpr int wallW = 10;
+        constexpr int wallH = 10;
+        const Vec3 half = {0.25f, 0.25f, 0.25f};
         const float spacingX = half.x * 2.0f;
         const float spacingY = half.y * 2.0f;
 

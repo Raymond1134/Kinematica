@@ -5,6 +5,8 @@
 #include "SupportPoint.h"
 
 inline SupportPoint supportPoint(const RigidBody& A, const RigidBody& B, const Vec3& direction) {
+    assert(A.collider.isConvex() && B.collider.isConvex() && "supportPoint() called with non-convex collider (GJK/EPA requires convex)");
+
     Vec3 dirA_local = A.orientation.rotateInv(direction);
     Vec3 dirB_local = B.orientation.rotateInv(-direction);
     Vec3 pA_local = A.collider.support(dirA_local);

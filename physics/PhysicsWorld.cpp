@@ -569,14 +569,18 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
                         }
                         break;
                     }
-                    case ColliderType::Mesh:
                     case ColliderType::Compound:
+                        assert(false && "Nested compound child encountered; createCompound() should flatten compounds");
+                        break;
+                    case ColliderType::Mesh:
+                        assert(false && "Mesh colliders are not supported for floor contacts");
                         break;
                 }
             }
             break;
         }
         case ColliderType::Mesh:
+            assert(false && "Mesh colliders are not supported for floor contacts");
             break;
     }
 
