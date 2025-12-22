@@ -17,6 +17,8 @@ static float getDeltaTime() {
 int main() {
     const float FIXED_DT = 1.0f / 60.0f;
     float accumulator = 0.0f;
+
+    const int MAX_SUBSTEPS = 4;
     
     PhysicsWorld physicsWorld;
     std::list<RigidBody> dynamicBodies;
@@ -24,39 +26,37 @@ int main() {
 
     Renderer renderer;
     if (!renderer.init(1280, 720, "Kinematica Sandbox")) return -1;
+    {
+        constexpr int wallW = 12;
+        constexpr int wallH = 12;
+        const Vec3 half = {0.15f, 0.15f, 0.15f};
+        const float spacingX = half.x * 2.0f;
+        const float spacingY = half.y * 2.0f;
 
-    RigidBody s1;
-    s1.position = {0.0f, 5.0f, 0.0f};
-    s1.mass = 1.0f;
-    s1.isStatic = false;
-    s1.collider = Collider::createSphere(0.5f);
-    dynamicBodies.push_back(s1);
-    auto it1 = std::prev(dynamicBodies.end());
-    physicsWorld.addRigidBody(&(*it1));
+        const float baseX = -0.5f * (wallW - 1) * spacingX;
+        const float baseY = physicsWorld.floorY + half.y;
+        const float z = 0.0f;
 
-    RigidBody s2;
-    s2.position = {1.5f, 5.0f, 0.0f};
-    s2.mass = 1.0f;
-    s2.isStatic = false;
-    s2.collider = Collider::createSphere(0.5f);
-    dynamicBodies.push_back(s2);
-    auto it2 = std::prev(dynamicBodies.end());
-    physicsWorld.addRigidBody(&(*it2));
+        for (int y = 0; y < wallH; ++y) {
+            for (int x = 0; x < wallW; ++x) {
+                RigidBody b;
+                b.position = {baseX + x * spacingX, baseY + y * spacingY, z};
+                b.velocity = {0.0f, 0.0f, 0.0f};
+                b.angularVelocity = {0.0f, 0.0f, 0.0f};
+                b.orientation = Quat::identity();
+                b.mass = 1.0f;
+                b.friction = 0.65f;
+                b.restitution = 0.0f;
+                b.collider = Collider::createBox(half);
+                b.isStatic = false;
+                b.sleeping = true;
+                b.sleepTimer = 1.0f;
 
-    RigidBody s3;
-    s3.position = {3.0f, 5.0f, 0.0f};
-    s3.mass = 1.0f;
-    s3.isStatic = false;
-    s3.collider = Collider::createSphere(0.5f);
-    dynamicBodies.push_back(s3);
-    auto it3 = std::prev(dynamicBodies.end());
-    physicsWorld.addRigidBody(&(*it3));
-
-    float restLength = 1.5f;
-    float stiffness = 10.0f;
-    float damping = 1.0f;
-    physicsWorld.springs.emplace_back(&(*it1), &(*it2), restLength, stiffness, damping);
-    physicsWorld.springs.emplace_back(&(*it2), &(*it3), restLength, stiffness, damping);
+                dynamicBodies.push_back(b);
+                physicsWorld.addRigidBody(&dynamicBodies.back());
+            }
+        }
+    }
 
     SetExitKey(0);
 
@@ -66,6 +66,7 @@ int main() {
             else ToggleFullscreen();
         }
         float frameTime = getDeltaTime();
+        if (frameTime > 0.25f) frameTime = 0.25f;
         accumulator += frameTime;
 
         if (IsKeyPressed(KEY_ONE)) {
@@ -77,7 +78,7 @@ int main() {
             newSphere.velocity = camFwd * 10.0f;
             newSphere.angularVelocity = {0.0f, 0.0f, 0.0f};
             newSphere.orientation = Quat::identity();
-            newSphere.mass = 1.0f;
+            newSphere.mass = 25.0f;
             newSphere.friction = 0.40f;
             newSphere.restitution = 0.26f;
             newSphere.collider = Collider::createSphere(0.5f);
@@ -335,9 +336,14 @@ int main() {
             physicsWorld.addRigidBody(&dynamicBodies.back());
         }
 
-        while (accumulator >= FIXED_DT) {
+        int substeps = 0;
+        while (accumulator >= FIXED_DT && substeps < MAX_SUBSTEPS) {
             physicsWorld.step(FIXED_DT);
             accumulator -= FIXED_DT;
+            ++substeps;
+        }
+        if (substeps == MAX_SUBSTEPS && accumulator >= FIXED_DT) {
+            accumulator = 0.0f;
         }
 
         renderer.beginFrame();

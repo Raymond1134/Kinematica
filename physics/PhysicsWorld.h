@@ -6,14 +6,36 @@
 
 #include <vector>
 #include <cmath>
+#include <algorithm>
 #include <unordered_map>
 #include <cstdint>
+#include <chrono>
 #include <omp.h>
 #include "collision/GJK.h"
 #include "collision/EPA.h"
 
 class PhysicsWorld {
 public:
+    PhysicsWorld() {
+        contactCache.reserve(16384);
+        contactCache.max_load_factor(0.70f);
+    }
+
+    int ompMinBodiesForParallel = 16;
+    int ompMinPairsForParallel = 64;
+
+    struct PerfStats {
+        float stepMs = 0.0f;
+        float buildContactsMs = 0.0f;
+        float solveMs = 0.0f;
+        int bodies = 0;
+        int awake = 0;
+        int broadphasePairs = 0;
+        int manifolds = 0;
+    };
+
+    PerfStats perf;
+
     std::vector<RigidBody*> bodies;
     float currentDt = 1.0f / 60.0f;
     Vec3 gravity = {0.0f, -9.81f, 0.0f};
@@ -35,6 +57,9 @@ public:
     }
 
     void step(float deltaTime) {
+        using clock = std::chrono::steady_clock;
+        auto tStep0 = clock::now();
+
         for (const Spring& spring : springs) {
             if (!spring.a || !spring.b) continue;
             Vec3 delta = spring.b->position - spring.a->position;
@@ -50,64 +75,94 @@ public:
         }
         currentDt = deltaTime;
 
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < (int)bodies.size(); ++i) {
-            RigidBody* body = bodies[i];
-            if (!body) continue;
-            body->hadContactThisStep = false;
-        }
+        const int nBodies = (int)bodies.size();
+        const bool useOmpBodies = (nBodies >= ompMinBodiesForParallel);
 
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < (int)bodies.size(); ++i) {
-            RigidBody* body = bodies[i];
-            if (body->isStatic) continue;
-            if (body->sleeping) continue;
-            body->velocity += gravity * deltaTime;
-        }
+        perf.bodies = nBodies;
 
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < (int)bodies.size(); ++i) {
-            RigidBody* body = bodies[i];
-            if (body->isStatic) continue;
-            if (body->sleeping) continue;
-            body->position += body->velocity * deltaTime;
-            body->orientation.integrateAngularVelocity(body->angularVelocity, deltaTime);
-        }
-
-        // Clamp velocities and apply damping
         const float maxVelocity = 999.0f;
         const float maxAngularVelocity = 999.0f;
-        for (RigidBody* body: bodies) {
-            if (body->isStatic) continue;
-            if (body->sleeping) continue;
-            float speedSq = body->velocity.x * body->velocity.x + body->velocity.y * body->velocity.y + body->velocity.z * body->velocity.z;
+        const float lin = expf(-linearDampingPerSecond * deltaTime);
+        const float ang = expf(-angularDampingPerSecond * deltaTime);
+
+        auto bodyStep = [&](RigidBody* body) {
+            if (!body) return;
+            body->hadContactThisStep = false;
+            if (body->isStatic) return;
+            if (body->sleeping) return;
+
+            body->velocity += gravity * deltaTime;
+            body->position += body->velocity * deltaTime;
+            body->orientation.integrateAngularVelocity(body->angularVelocity, deltaTime);
+
+            float speedSq = body->velocity.lengthSq();
             if (speedSq > maxVelocity * maxVelocity) {
                 float speed = sqrtf(speedSq);
                 body->velocity = body->velocity * (maxVelocity / speed);
             }
-            float angSpeedSq = body->angularVelocity.x * body->angularVelocity.x + body->angularVelocity.y * body->angularVelocity.y + body->angularVelocity.z * body->angularVelocity.z;
+            float angSpeedSq = body->angularVelocity.lengthSq();
             if (angSpeedSq > maxAngularVelocity * maxAngularVelocity) {
                 float angSpeed = sqrtf(angSpeedSq);
                 body->angularVelocity = body->angularVelocity * (maxAngularVelocity / angSpeed);
             }
-            float lin = expf(-linearDampingPerSecond * deltaTime);
-            float ang = expf(-angularDampingPerSecond * deltaTime);
+
             body->velocity = body->velocity * lin;
             body->angularVelocity = body->angularVelocity * ang;
+        };
+
+        if (useOmpBodies) {
+            #pragma omp parallel for schedule(static)
+            for (int i = 0; i < nBodies; ++i) {
+                bodyStep(bodies[i]);
+            }
+        } else {
+            for (int i = 0; i < nBodies; ++i) {
+                bodyStep(bodies[i]);
+            }
         }
 
-        // Sleep logic
+        int awakeCount = 0;
+        for (RigidBody* body : bodies) {
+            if (!body) continue;
+            if (body->isStatic) continue;
+            if (!body->sleeping) ++awakeCount;
+        }
+        perf.awake = awakeCount;
+
+        contacts.clear();
+
+        auto tContacts0 = clock::now();
+        buildContacts(contacts);
+        auto tContacts1 = clock::now();
+        perf.buildContactsMs = std::chrono::duration<float, std::milli>(tContacts1 - tContacts0).count();
+
+        computeRestitutionTargets(contacts);
+        warmStartContacts(contacts);
+
+        auto tSolve0 = clock::now();
+        int iterCount = solverIterations;
+        if (perf.awake > 48) iterCount = std::min(iterCount, 10);
+        else if (perf.awake > 24) iterCount = std::min(iterCount, 14);
+
+        for (int pass = 0; pass < iterCount; ++pass) {
+            solveContacts(contacts, pass == 0);
+        }
+        auto tSolve1 = clock::now();
+        perf.solveMs = std::chrono::duration<float, std::milli>(tSolve1 - tSolve0).count();
+
         const float sleepLinear = 0.02f;
         const float sleepAngular = 0.01f;
         const float sleepTime = 0.4f;
         for (RigidBody* body: bodies) {
+            if (!body) continue;
             if (body->isStatic) continue;
             if (body->sleeping) {
                 body->sleepTimer = sleepTime;
                 continue;
             }
-            float v2 = body->velocity.x * body->velocity.x + body->velocity.y * body->velocity.y + body->velocity.z * body->velocity.z;
-            float w2 = body->angularVelocity.x * body->angularVelocity.x + body->angularVelocity.y * body->angularVelocity.y + body->angularVelocity.z * body->angularVelocity.z;
+
+            float v2 = body->velocity.lengthSq();
+            float w2 = body->angularVelocity.lengthSq();
             if (body->hadContactThisStep && v2 < sleepLinear * sleepLinear && w2 < sleepAngular * sleepAngular) {
                 body->sleepTimer += deltaTime;
                 if (body->sleepTimer >= sleepTime) {
@@ -120,17 +175,11 @@ public:
             }
         }
 
-        contacts.clear();
-        buildContacts(contacts);
-        computeRestitutionTargets(contacts);
-        warmStartContacts(contacts);
-
-        for (int pass = 0; pass < solverIterations; ++pass) {
-            solveContacts(contacts, pass == 0);
-        }
-
         ++frameId;
         pruneContactCache();
+
+        auto tStep1 = clock::now();
+        perf.stepMs = std::chrono::duration<float, std::milli>(tStep1 - tStep0).count();
     }
 
     int solverIterations = 20;
@@ -199,6 +248,38 @@ public:
 
     std::unordered_map<ContactKey, CachedImpulse, ContactKeyHash> contactCache;
 
+    static void reduceManifoldTo2(ContactManifold& m) {
+        if (m.count <= 2) return;
+
+        int deepest = 0;
+        float bestPen = m.points[0].penetration;
+        for (int i = 1; i < m.count; ++i) {
+            if (m.points[i].penetration > bestPen) {
+                bestPen = m.points[i].penetration;
+                deepest = i;
+            }
+        }
+
+        int farthest = -1;
+        float bestD2 = -1.0f;
+        const Vec3 p0 = m.points[deepest].pointWorld;
+        for (int i = 0; i < m.count; ++i) {
+            if (i == deepest) continue;
+            Vec3 d = m.points[i].pointWorld - p0;
+            float d2 = d.lengthSq();
+            if (d2 > bestD2) {
+                bestD2 = d2;
+                farthest = i;
+            }
+        }
+
+        ContactPointState a = m.points[deepest];
+        ContactPointState b = (farthest >= 0) ? m.points[farthest] : m.points[(deepest == 0) ? 1 : 0];
+        m.points[0] = a;
+        m.points[1] = b;
+        m.count = 2;
+    }
+
     static bool isFiniteVec3(const Vec3& v) {
         return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
     }
@@ -234,36 +315,213 @@ public:
     void buildContacts(std::vector<ContactManifold>& out) {
         out.reserve(bodies.size() * 2);
 
+        const int nBodies = (int)bodies.size();
+        const int maxThreads = omp_get_max_threads();
+        ensureContactLocals(maxThreads);
+        auto& locals = contactLocals;
+        const bool useOmp = (nBodies >= ompMinBodiesForParallel);
+
         if (enableFloor) {
-            for (RigidBody* body : bodies) {
-                ContactManifold m;
-                if (detectFloor(body, m)) {
-                    out.push_back(m);
+            if (useOmp) {
+                #pragma omp parallel
+                {
+                    const int tid = omp_get_thread_num();
+                    auto& local = locals[tid];
+                    local.clear();
+
+                    #pragma omp for schedule(static)
+                    for (int i = 0; i < nBodies; ++i) {
+                        RigidBody* body = bodies[i];
+                        ContactManifold m;
+                        if (detectFloor(body, m)) {
+                            local.push_back(m);
+                        }
+                    }
+                }
+
+                for (auto& local : locals) {
+                    out.insert(out.end(), local.begin(), local.end());
+                    local.clear();
+                }
+            } else {
+                for (int i = 0; i < nBodies; ++i) {
+                    RigidBody* body = bodies[i];
+                    ContactManifold m;
+                    if (detectFloor(body, m)) {
+                        out.push_back(m);
+                    }
                 }
             }
         }
 
-        constexpr float broadphaseMargin = 0.05f;
+        buildSapCandidates();
 
-        for (size_t i = 0; i < bodies.size(); ++i) {
-            RigidBody* bi = bodies[i];
+        perf.broadphasePairs = (int)sapPairs.size();
+
+        const int nPairs = (int)sapPairs.size();
+        const bool useOmpPairs = useOmp && (nPairs >= ompMinPairsForParallel);
+        if (useOmpPairs) {
+            int perThreadReserve = std::max(8, nPairs / std::max(1, maxThreads));
+            for (auto& local : locals) {
+                local.clear();
+                if ((int)local.capacity() < perThreadReserve) local.reserve(perThreadReserve);
+            }
+
+            #pragma omp parallel for schedule(static)
+            for (int p = 0; p < nPairs; ++p) {
+                const int tid = omp_get_thread_num();
+                appendBodyBodyContacts(sapPairs[p].a, sapPairs[p].b, locals[tid], epaLocals[tid]);
+            }
+
+            for (auto& local : locals) {
+                out.insert(out.end(), local.begin(), local.end());
+            }
+        } else {
+            for (int p = 0; p < nPairs; ++p) {
+                appendBodyBodyContacts(sapPairs[p].a, sapPairs[p].b, out, epaLocals[0]);
+            }
+        }
+
+        perf.manifolds = (int)out.size();
+    }
+
+    struct SapEntry {
+        float minX;
+        float maxX;
+        float minY;
+        float maxY;
+        float minZ;
+        float maxZ;
+        RigidBody* body;
+    };
+    struct SapPair {
+        RigidBody* a;
+        RigidBody* b;
+    };
+    std::vector<SapEntry> sapEntries;
+    std::vector<SapPair> sapPairs;
+    std::vector<int> sapActive;
+
+    std::vector<std::vector<ContactManifold>> contactLocals;
+    std::vector<EPAScratch> epaLocals;
+
+    void ensureContactLocals(int maxThreads) {
+        if ((int)contactLocals.size() != maxThreads) {
+            contactLocals.clear();
+            contactLocals.resize(maxThreads);
+        }
+
+        if ((int)epaLocals.size() != maxThreads) {
+            epaLocals.clear();
+            epaLocals.resize(maxThreads);
+        }
+    }
+
+    void buildSapCandidates() {
+        constexpr float broadphaseMargin = 0.01f;
+
+        auto absf3 = [](const Vec3& v) {
+            return Vec3{fabsf(v.x), fabsf(v.y), fabsf(v.z)};
+        };
+
+        auto computeAabb = [&](const RigidBody* b, Vec3& outMin, Vec3& outMax) {
+            switch (b->collider.type) {
+                case ColliderType::Sphere: {
+                    float r = b->collider.sphere.radius;
+                    Vec3 e{r, r, r};
+                    outMin = b->position - e;
+                    outMax = b->position + e;
+                    return;
+                }
+                case ColliderType::Box: {
+                    Vec3 he = b->collider.box.halfExtents;
+                    Vec3 ax = absf3(b->orientation.rotate({1.0f, 0.0f, 0.0f}));
+                    Vec3 ay = absf3(b->orientation.rotate({0.0f, 1.0f, 0.0f}));
+                    Vec3 az = absf3(b->orientation.rotate({0.0f, 0.0f, 1.0f}));
+                    Vec3 e{
+                        ax.x * he.x + ay.x * he.y + az.x * he.z,
+                        ax.y * he.x + ay.y * he.y + az.y * he.z,
+                        ax.z * he.x + ay.z * he.y + az.z * he.z,
+                    };
+                    outMin = b->position - e;
+                    outMax = b->position + e;
+                    return;
+                }
+                case ColliderType::Capsule: {
+                    float r = b->collider.capsule.radius;
+                    float hh = b->collider.capsule.halfHeight;
+                    Vec3 axis = absf3(b->orientation.rotate({0.0f, 1.0f, 0.0f}));
+                    Vec3 e{r + axis.x * hh, r + axis.y * hh, r + axis.z * hh};
+                    outMin = b->position - e;
+                    outMax = b->position + e;
+                    return;
+                }
+                case ColliderType::Convex:
+                case ColliderType::Compound:
+                case ColliderType::Mesh: {
+                    float r = b->collider.boundingRadius();
+                    Vec3 e{r, r, r};
+                    outMin = b->position - e;
+                    outMax = b->position + e;
+                    return;
+                }
+            }
+        };
+
+        sapEntries.clear();
+        sapEntries.reserve(bodies.size());
+        for (RigidBody* body : bodies) {
+            if (!body) continue;
+            Vec3 mn, mx;
+            computeAabb(body, mn, mx);
+            SapEntry e;
+            e.minX = mn.x - broadphaseMargin;
+            e.maxX = mx.x + broadphaseMargin;
+            e.minY = mn.y - broadphaseMargin;
+            e.maxY = mx.y + broadphaseMargin;
+            e.minZ = mn.z - broadphaseMargin;
+            e.maxZ = mx.z + broadphaseMargin;
+            e.body = body;
+            sapEntries.push_back(e);
+        }
+
+        std::sort(sapEntries.begin(), sapEntries.end(), [](const SapEntry& a, const SapEntry& b) {
+            return a.minX < b.minX;
+        });
+
+        sapPairs.clear();
+        sapPairs.reserve(sapEntries.size() * 2);
+
+        sapActive.clear();
+        if (sapActive.capacity() < 128) sapActive.reserve(128);
+
+        for (int i = 0; i < (int)sapEntries.size(); ++i) {
+            const SapEntry& cur = sapEntries[i];
+            RigidBody* bi = cur.body;
             if (!bi) continue;
-            if (bi->isStatic) continue;
-            float ri = bi->collider.boundingRadius();
+            int write = 0;
+            for (int k = 0; k < (int)sapActive.size(); ++k) {
+                if (sapEntries[sapActive[k]].maxX >= cur.minX) {
+                    sapActive[write++] = sapActive[k];
+                }
+            }
+            sapActive.resize(write);
 
-            for (size_t j = i + 1; j < bodies.size(); ++j) {
-                RigidBody* bj = bodies[j];
+            for (int idx : sapActive) {
+                const SapEntry& other = sapEntries[idx];
+                RigidBody* bj = other.body;
                 if (!bj) continue;
-                if (bj->isStatic && bi->isStatic) continue;
+                if (bi == bj) continue;
+                if (bi->isStatic && bj->isStatic) continue;
                 if (bi->sleeping && bj->sleeping) continue;
 
-                float rj = bj->collider.boundingRadius();
-                Vec3 d = bj->position - bi->position;
-                float maxD = ri + rj + broadphaseMargin;
-                if (d.lengthSq() > maxD * maxD) continue;
+                if (cur.maxY < other.minY || cur.minY > other.maxY) continue;
+                if (cur.maxZ < other.minZ || cur.minZ > other.maxZ) continue;
 
-                appendBodyBodyContacts(bi, bj, out);
+                sapPairs.push_back({bi, bj});
             }
+
+            sapActive.push_back(i);
         }
     }
 
@@ -289,19 +547,25 @@ public:
             }
         };
 
-        std::vector<Vec3> verts;
+        auto testVertex = [&](const Vec3& vWorld) {
+            float pen = floorY - vWorld.y;
+            if (pen > 0.0f) {
+                addPoint({vWorld.x, floorY, vWorld.z}, pen);
+            }
+        };
+
         switch (body->collider.type) {
             case ColliderType::Sphere: {
                 float r = body->collider.sphere.radius;
-                verts.push_back(body->position + Vec3{0, -r, 0});
+                testVertex(body->position + Vec3{0, -r, 0});
                 break;
             }
             case ColliderType::Capsule: {
                 float r = body->collider.capsule.radius;
                 float hh = body->collider.capsule.halfHeight;
                 Vec3 axis = body->orientation.rotate({0.0f, 1.0f, 0.0f});
-                verts.push_back(body->position + axis * hh + Vec3{0, -r, 0});
-                verts.push_back(body->position - axis * hh + Vec3{0, -r, 0});
+                testVertex(body->position + axis * hh + Vec3{0, -r, 0});
+                testVertex(body->position - axis * hh + Vec3{0, -r, 0});
                 break;
             }
             case ColliderType::Box: {
@@ -310,15 +574,17 @@ public:
                     for (int dy = -1; dy <= 1; dy += 2) {
                         for (int dz = -1; dz <= 1; dz += 2) {
                             Vec3 local = {he.x * dx, he.y * dy, he.z * dz};
-                            verts.push_back(body->orientation.rotate(local) + body->position);
+                            testVertex(body->orientation.rotate(local) + body->position);
                         }
                     }
                 }
                 break;
             }
             case ColliderType::Convex: {
-                for (const Vec3& v : body->collider.polyhedron.verts) {
-                    verts.push_back(body->orientation.rotate(v) + body->position);
+                if (body->collider.polyhedron) {
+                    for (const Vec3& v : body->collider.polyhedron->verts) {
+                        testVertex(body->orientation.rotate(v) + body->position);
+                    }
                 }
                 break;
             }
@@ -331,15 +597,15 @@ public:
                     switch (child.collider.type) {
                         case ColliderType::Sphere: {
                             float r = child.collider.sphere.radius;
-                            verts.push_back(pChildWorld + Vec3{0, -r, 0});
+                            testVertex(pChildWorld + Vec3{0, -r, 0});
                             break;
                         }
                         case ColliderType::Capsule: {
                             float r = child.collider.capsule.radius;
                             float hh = child.collider.capsule.halfHeight;
                             Vec3 axis = qChildWorld.rotate({0.0f, 1.0f, 0.0f});
-                            verts.push_back(pChildWorld + axis * hh + Vec3{0, -r, 0});
-                            verts.push_back(pChildWorld - axis * hh + Vec3{0, -r, 0});
+                            testVertex(pChildWorld + axis * hh + Vec3{0, -r, 0});
+                            testVertex(pChildWorld - axis * hh + Vec3{0, -r, 0});
                             break;
                         }
                         case ColliderType::Box: {
@@ -348,15 +614,17 @@ public:
                                 for (int dy = -1; dy <= 1; dy += 2) {
                                     for (int dz = -1; dz <= 1; dz += 2) {
                                         Vec3 local = {he.x * dx, he.y * dy, he.z * dz};
-                                        verts.push_back(qChildWorld.rotate(local) + pChildWorld);
+                                        testVertex(qChildWorld.rotate(local) + pChildWorld);
                                     }
                                 }
                             }
                             break;
                         }
                         case ColliderType::Convex: {
-                            for (const Vec3& v : child.collider.polyhedron.verts) {
-                                verts.push_back(qChildWorld.rotate(v) + pChildWorld);
+                            if (child.collider.polyhedron) {
+                                for (const Vec3& v : child.collider.polyhedron->verts) {
+                                    testVertex(qChildWorld.rotate(v) + pChildWorld);
+                                }
                             }
                             break;
                         }
@@ -370,13 +638,10 @@ public:
             case ColliderType::Mesh:
                 break;
         }
-        for (const Vec3& v : verts) {
-            float pen = floorY - v.y;
-            if (pen > 0.0f) {
-                addPoint({v.x, floorY, v.z}, pen);
-            }
-        }
 
+        if (m.count > 2) {
+            reduceManifoldTo2(m);
+        }
         return m.count > 0;
     }
 
@@ -912,6 +1177,10 @@ public:
             m.points[0].targetNormalVelocity = 0.0f;
         }
 
+        if (m.count > 2) {
+            reduceManifoldTo2(m);
+        }
+
         if (ref == a) {
             m.a = a;
             m.b = b;
@@ -1178,7 +1447,7 @@ public:
         if (Vec3::dot(m.normal, ab) < 0.0f) m.normal = -m.normal;
     }
 
-    void appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out) {
+    void appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out, EPAScratch& epaScratch) {
         if (!a || !b) return;
         if (a->isStatic && b->isStatic) return;
         if (a->sleeping && b->sleeping) return;
@@ -1195,7 +1464,7 @@ public:
 
         if (!aCompound && !bCompound) {
             ContactManifold m;
-            if (detectBodyBodyConvex(a, b, m)) out.push_back(m);
+            if (detectBodyBodyConvex(a, b, m, epaScratch)) out.push_back(m);
             return;
         }
 
@@ -1214,7 +1483,7 @@ public:
                     if (d.lengthSq() > maxD * maxD) continue;
 
                     ContactManifold mChild;
-                    if (detectBodyBodyConvex(&pa, &pb, mChild)) {
+                    if (detectBodyBodyConvex(&pa, &pb, mChild, epaScratch)) {
                         mChild.a = a;
                         mChild.b = b;
                         orientNormalForPair(mChild, a, b);
@@ -1236,7 +1505,7 @@ public:
                 if (d.lengthSq() > maxD * maxD) continue;
 
                 ContactManifold mChild;
-                if (detectBodyBodyConvex(&pa, b, mChild)) {
+                if (detectBodyBodyConvex(&pa, b, mChild, epaScratch)) {
                     mChild.a = a;
                     mChild.b = b;
                     orientNormalForPair(mChild, a, b);
@@ -1256,7 +1525,7 @@ public:
             if (d.lengthSq() > maxD * maxD) continue;
 
             ContactManifold mChild;
-            if (detectBodyBodyConvex(a, &pb, mChild)) {
+            if (detectBodyBodyConvex(a, &pb, mChild, epaScratch)) {
                 mChild.a = a;
                 mChild.b = b;
                 orientNormalForPair(mChild, a, b);
@@ -1266,7 +1535,7 @@ public:
         }
     }
 
-    bool detectBodyBodyConvex(RigidBody* a, RigidBody* b, ContactManifold& m) {
+    bool detectBodyBodyConvex(RigidBody* a, RigidBody* b, ContactManifold& m, EPAScratch& epaScratch) {
         if (!a || !b) return false;
         if (a->isStatic && b->isStatic) return false;
         if (a->sleeping && b->sleeping) return false;
@@ -1307,7 +1576,7 @@ public:
         GJKResult gjkRes = gjk(*a, *b);
         if (!gjkRes.hit) return false;
 
-        EPAResult epaRes = epaPenetration(*a, *b, gjkRes.simplex);
+        EPAResult epaRes = epaPenetration(*a, *b, gjkRes.simplex, epaScratch);
         Vec3 normal = epaRes.normal.normalized();
         if (normal.lengthSq() < 1e-8f) {
             Vec3 delta = b->position - a->position;

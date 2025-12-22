@@ -32,6 +32,12 @@ struct EPAResult {
     bool hasWitness = false;
 };
 
+struct EPAScratch {
+    std::vector<SupportPoint> verts;
+    std::vector<EPAFaceIdx> faces;
+    std::vector<EPAEdgeIdx> boundary;
+};
+
 inline bool nearlyEqualVec3(const Vec3& a, const Vec3& b, float epsSq = 1e-10f) {
     Vec3 d = a - b;
     return d.lengthSq() <= epsSq;
@@ -324,5 +330,118 @@ inline EPAResult epaPenetration(
         fillWitnessFromFace(faces[best]);
     }
 
+    return out;
+}
+
+inline EPAResult epaPenetration(
+    const RigidBody& A,
+    const RigidBody& B,
+    const Simplex& simplex,
+    EPAScratch& scratch
+) {
+    EPAResult out;
+
+    scratch.verts.clear();
+    if ((int)scratch.verts.capacity() < 128) scratch.verts.reserve(128);
+    for (int i = 0; i < simplex.size; ++i) {
+        scratch.verts.push_back(simplex.verts[i]);
+    }
+    if (scratch.verts.empty()) return out;
+
+    ensureTetrahedron(A, B, scratch.verts);
+    if (scratch.verts.size() < 4) {
+        return out;
+    }
+
+    scratch.faces.clear();
+    if ((int)scratch.faces.capacity() < 256) scratch.faces.reserve(256);
+    scratch.faces.push_back(makeFaceIdx(scratch.verts, 0, 1, 2));
+    scratch.faces.push_back(makeFaceIdx(scratch.verts, 0, 3, 1));
+    scratch.faces.push_back(makeFaceIdx(scratch.verts, 0, 2, 3));
+    scratch.faces.push_back(makeFaceIdx(scratch.verts, 1, 3, 2));
+
+    constexpr int MAX_ITERATIONS = 64;
+    constexpr float TOLERANCE = 1e-4f;
+    constexpr int MAX_VERTS = 128;
+    constexpr int MAX_FACES = 256;
+
+    auto fillWitnessFromFace = [&](const EPAFaceIdx& f) {
+        const SupportPoint& v0 = scratch.verts[f.a];
+        const SupportPoint& v1 = scratch.verts[f.b];
+        const SupportPoint& v2 = scratch.verts[f.c];
+
+        float u = 0.0f, v = 0.0f, w = 0.0f;
+        closestPointToOriginOnTriangleBarycentric(v0.p, v1.p, v2.p, u, v, w);
+        out.pointAWorld = v0.aWorld * u + v1.aWorld * v + v2.aWorld * w;
+        out.pointBWorld = v0.bWorld * u + v1.bWorld * v + v2.bWorld * w;
+        out.hasWitness = true;
+    };
+
+    for (int iter = 0; iter < MAX_ITERATIONS; ++iter) {
+        if ((int)scratch.verts.size() >= MAX_VERTS) break;
+        if ((int)scratch.faces.size() >= MAX_FACES) break;
+
+        int closest = -1;
+        float minDist = std::numeric_limits<float>::infinity();
+        for (int i = 0; i < (int)scratch.faces.size(); ++i) {
+            if (scratch.faces[i].distance < minDist) {
+                minDist = scratch.faces[i].distance;
+                closest = i;
+            }
+        }
+        if (closest < 0) break;
+
+        const EPAFaceIdx f = scratch.faces[closest];
+        if (!std::isfinite(f.distance) || f.normal.lengthSq() < 1e-12f) break;
+
+        SupportPoint p = supportPoint(A, B, f.normal);
+        float d = Vec3::dot(f.normal, p.p);
+        if (!std::isfinite(d)) break;
+
+        if (d - f.distance < TOLERANCE) {
+            out.normal = f.normal;
+            out.penetration = f.distance;
+            fillWitnessFromFace(f);
+            return out;
+        }
+
+        int newIndex = (int)scratch.verts.size();
+        scratch.verts.push_back(p);
+
+        scratch.boundary.clear();
+        if ((int)scratch.boundary.capacity() < 128) scratch.boundary.reserve(128);
+
+        for (int i = (int)scratch.faces.size() - 1; i >= 0; --i) {
+            const EPAFaceIdx& face = scratch.faces[i];
+            const Vec3& a0 = scratch.verts[face.a].p;
+            if (Vec3::dot(face.normal, p.p - a0) > 0.0f) {
+                addBoundaryEdge(scratch.boundary, face.a, face.b);
+                addBoundaryEdge(scratch.boundary, face.b, face.c);
+                addBoundaryEdge(scratch.boundary, face.c, face.a);
+                scratch.faces.erase(scratch.faces.begin() + i);
+            }
+        }
+
+        for (const auto& e : scratch.boundary) {
+            EPAFaceIdx nf = makeFaceIdx(scratch.verts, e.a, e.b, newIndex);
+            if (!std::isfinite(nf.distance)) continue;
+            scratch.faces.push_back(nf);
+            if ((int)scratch.faces.size() >= MAX_FACES) break;
+        }
+    }
+
+    int best = -1;
+    float bestDist = std::numeric_limits<float>::infinity();
+    for (int i = 0; i < (int)scratch.faces.size(); ++i) {
+        if (scratch.faces[i].distance < bestDist) {
+            bestDist = scratch.faces[i].distance;
+            best = i;
+        }
+    }
+    if (best >= 0) {
+        out.normal = scratch.faces[best].normal;
+        out.penetration = scratch.faces[best].distance;
+        fillWitnessFromFace(scratch.faces[best]);
+    }
     return out;
 }

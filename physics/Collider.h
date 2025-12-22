@@ -30,7 +30,7 @@ struct Collider : public ConvexShape {
     SphereShape sphere;
     BoxShape box;
     CapsuleShape capsule;
-    PolyhedronShape polyhedron;
+    std::shared_ptr<PolyhedronShape> polyhedron;
     std::shared_ptr<void> mesh;
     std::shared_ptr<CompoundShape> compound;
     float compoundBoundRadius = 0.0f;
@@ -58,7 +58,7 @@ struct Collider : public ConvexShape {
     static Collider createConvex(const std::vector<Vec3>& verts) {
         Collider c;
         c.type = ColliderType::Convex;
-        c.polyhedron = PolyhedronShape(verts);
+        c.polyhedron = std::make_shared<PolyhedronShape>(verts);
         return c;
     }
 
@@ -80,7 +80,7 @@ struct Collider : public ConvexShape {
             case ColliderType::Capsule:
                 return capsule.halfHeight + capsule.radius;
             case ColliderType::Convex:
-                return polyhedron.boundRadius;
+                return polyhedron ? polyhedron->boundRadius : 0.0f;
             case ColliderType::Mesh:
                 break;
             case ColliderType::Compound:
@@ -109,9 +109,10 @@ struct Collider : public ConvexShape {
                 return capCenter + d * capsule.radius;
             }
             case ColliderType::Convex: {
+                assert(polyhedron && "Convex collider missing polyhedron");
                 float maxDot = -1e30f;
                 Vec3 best = {0,0,0};
-                for (const Vec3& v : polyhedron.verts) {
+                for (const Vec3& v : polyhedron->verts) {
                     float dot = Vec3::dot(v, d);
                     if (dot > maxDot) {
                         maxDot = dot;

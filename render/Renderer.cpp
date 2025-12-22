@@ -40,8 +40,15 @@ void Renderer::beginFrame() {
     cam.projection = CAMERA_PERSPECTIVE;
 
     BeginMode3D(cam);
+    in3D = true;
 
     DrawGrid(20, 1.0f);
+}
+
+void Renderer::end3D() {
+    if (!in3D) return;
+    EndMode3D();
+    in3D = false;
 }
 
 void Renderer::drawRigidBody(const RigidBody* body, float size) {
@@ -95,7 +102,9 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
                 break;
             }
             case ColliderType::Convex: {
-                drawConvex(c.polyhedron.verts, color);
+                if (c.polyhedron) {
+                    drawConvex(*c.polyhedron, color);
+                }
                 break;
             }
             case ColliderType::Mesh:
@@ -129,77 +138,45 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
     rlPopMatrix();
 }
 
-void Renderer::drawConvex(const std::vector<Vec3>& verts, Color color) const {
-    if (verts.size() < 4) return;
+void Renderer::drawConvex(const PolyhedronShape& poly, Color color) const {
+    if (poly.verts.size() < 4) return;
+
     Color fillColor = color;
     Color edgeColor = BLACK;
-    struct Face { int a, b, c; };
-    std::vector<Face> faces;
-    // Naive convex hull triangulation
-    for (size_t i = 0; i < verts.size(); ++i) {
-        for (size_t j = 0; j < verts.size(); ++j) {
-            if (j == i) continue;
-            for (size_t k = 0; k < verts.size(); ++k) {
-                if (k == i || k == j) continue;
-                Vec3 v0 = verts[i];
-                Vec3 v1 = verts[j];
-                Vec3 v2 = verts[k];
-                Vec3 normal = Vec3::cross(v1 - v0, v2 - v0);
-                if (normal.x == 0 && normal.y == 0 && normal.z == 0) continue;
-                bool valid = true;
-                float sign = 0.0f;
-                for (size_t m = 0; m < verts.size(); ++m) {
-                    if (m == i || m == j || m == k) continue;
-                    float d = Vec3::dot(normal, verts[m] - v0);
-                    if (sign == 0.0f && fabsf(d) > 1e-6f) sign = d;
-                    if (d * sign < -1e-6f) { valid = false; break; }
-                }
-                if (valid) {
-                    bool duplicate = false;
-                    for (const auto& f : faces) {
-                        if ((f.a == i && f.b == j && f.c == k) ||
-                            (f.a == i && f.b == k && f.c == j) ||
-                            (f.a == j && f.b == i && f.c == k) ||
-                            (f.a == j && f.b == k && f.c == i) ||
-                            (f.a == k && f.b == i && f.c == j) ||
-                            (f.a == k && f.b == j && f.c == i)) {
-                            duplicate = true;
-                            break;
-                        }
-                    }
-                    if (!duplicate) faces.push_back({(int)i, (int)j, (int)k});
-                }
-            }
-        }
-    }
+
     rlPushMatrix();
+
     rlBegin(RL_TRIANGLES);
     rlColor4ub(fillColor.r, fillColor.g, fillColor.b, fillColor.a);
-    for (const auto& f : faces) {
-        rlVertex3f(verts[f.a].x, verts[f.a].y, verts[f.a].z);
-        rlVertex3f(verts[f.b].x, verts[f.b].y, verts[f.b].z);
-        rlVertex3f(verts[f.c].x, verts[f.c].y, verts[f.c].z);
-        rlVertex3f(verts[f.a].x, verts[f.a].y, verts[f.a].z);
-        rlVertex3f(verts[f.c].x, verts[f.c].y, verts[f.c].z);
-        rlVertex3f(verts[f.b].x, verts[f.b].y, verts[f.b].z);
+    for (const auto& t : poly.tris) {
+        const Vec3& a = poly.verts[t.a];
+        const Vec3& b = poly.verts[t.b];
+        const Vec3& c = poly.verts[t.c];
+        // Double-sided like the old path.
+        rlVertex3f(a.x, a.y, a.z);
+        rlVertex3f(b.x, b.y, b.z);
+        rlVertex3f(c.x, c.y, c.z);
+        rlVertex3f(a.x, a.y, a.z);
+        rlVertex3f(c.x, c.y, c.z);
+        rlVertex3f(b.x, b.y, b.z);
     }
     rlEnd();
+
     rlBegin(RL_LINES);
     rlColor4ub(edgeColor.r, edgeColor.g, edgeColor.b, edgeColor.a);
-    for (const auto& f : faces) {
-        rlVertex3f(verts[f.a].x, verts[f.a].y, verts[f.a].z);
-        rlVertex3f(verts[f.b].x, verts[f.b].y, verts[f.b].z);
-        rlVertex3f(verts[f.b].x, verts[f.b].y, verts[f.b].z);
-        rlVertex3f(verts[f.c].x, verts[f.c].y, verts[f.c].z);
-        rlVertex3f(verts[f.c].x, verts[f.c].y, verts[f.c].z);
-        rlVertex3f(verts[f.a].x, verts[f.a].y, verts[f.a].z);
+    for (const auto& e : poly.edges) {
+        const Vec3& a = poly.verts[e.a];
+        const Vec3& b = poly.verts[e.b];
+        rlVertex3f(a.x, a.y, a.z);
+        rlVertex3f(b.x, b.y, b.z);
     }
     rlEnd();
+
     rlPopMatrix();
 }
 
 void Renderer::endFrame() {
-    EndMode3D();
+    end3D();
     EndDrawing();
 
     if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
