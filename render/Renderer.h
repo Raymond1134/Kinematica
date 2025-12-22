@@ -14,6 +14,7 @@ public:
     void drawRigidBody(const RigidBody* body, float size = 0.5f);
     void drawConvex(const PolyhedronShape& poly, Color color) const;
     void end3D();
+    void setUiBlockRect(Rectangle r);
     void endFrame();
     void shutdown();
     
@@ -26,4 +27,7 @@ private:
     float camYaw = 225.0f;
     float camPitch = -20.0f;
     float moveSpeed = 8.0f; // meters/sec
+
+    bool hasUiBlockRect = false;
+    Rectangle uiBlockRect = {0.0f, 0.0f, 0.0f, 0.0f};
 };

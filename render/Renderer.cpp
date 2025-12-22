@@ -50,6 +50,11 @@ void Renderer::end3D() {
     in3D = false;
 }
 
+void Renderer::setUiBlockRect(Rectangle r) {
+    uiBlockRect = r;
+    hasUiBlockRect = (r.width > 0.0f && r.height > 0.0f);
+}
+
 void Renderer::drawRigidBody(const RigidBody* body, float size) {
     if (!body) return;
 
@@ -177,7 +182,10 @@ void Renderer::endFrame() {
     end3D();
     EndDrawing();
 
-    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+    Vector2 mouse = GetMousePosition();
+    bool mouseOverUi = hasUiBlockRect && CheckCollisionPointRec(mouse, uiBlockRect);
+
+    if (!mouseOverUi && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
         Vector2 delta = GetMouseDelta();
         camYaw += delta.x * 0.3f;
         camPitch += -delta.y * 0.3f;
@@ -212,9 +220,11 @@ void Renderer::endFrame() {
         camPos += move * (moveSpeed * dt);
     }
 
-    float wheel = GetMouseWheelMove();
-    if (fabsf(wheel) > 1e-6f) {
-        camPos += forward * (wheel * 1.5f);
+    if (!mouseOverUi) {
+        float wheel = GetMouseWheelMove();
+        if (fabsf(wheel) > 1e-6f) {
+            camPos += forward * (wheel * 1.5f);
+        }
     }
 }
 

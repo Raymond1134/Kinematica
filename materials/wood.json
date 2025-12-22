@@ -1,0 +1,6 @@
+{
+  "name": "Wood (Pine)",
+  "density": 500,
+  "friction": 0.45,
+  "restitution": 0.10
+}

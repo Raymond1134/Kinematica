@@ -48,6 +48,7 @@ cmake --build build --config Release
 - `physics/` — Core physics (`RigidBody`, `PhysicsWorld`)
 - `render/` — 3D viewer using raylib (`Renderer`)
 - `main.cpp` — Application entry with fixed-timestep physics loop
+- `materials/` — Material presets (JSON)
 
 
 ## Controls
@@ -55,16 +56,15 @@ cmake --build build --config Release
 - **Right-click + drag** — Orbit camera
 - **Mouse wheel** — Zoom in/out
 - **WASD** — Move camera (free-fly)
-- **1** — Spawn sphere at camera
-- **2** — Spawn box at camera
-- **3** — Spawn capsule at camera
+- **Q** — Spawn the currently selected shape
+- **Right-side panel** — Select shape, size, material, and floor material
 - **Alt+Enter** — Toggle fullscreen
 - **ESC or close window** — Exit
 
 
 ## Features
 
-- User-driven: Simulation starts empty; spawn bodies with keys 1/2/3
+- User-driven: spawn bodies with **Q** using the on-screen spawner panel
 - Rigid body physics: box, sphere, capsule colliders
 - Fixed timestep, sequential impulse solver, manifold contacts
 - Sleep/wake logic, restitution, friction

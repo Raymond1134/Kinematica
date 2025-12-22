@@ -1,0 +1,6 @@
+{
+  "name": "Aerogel (Silica)",
+  "density": 3,
+  "friction": 0.25,
+  "restitution": 0.02
+}

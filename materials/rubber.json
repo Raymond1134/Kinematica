@@ -1,0 +1,6 @@
+{
+  "name": "Rubber",
+  "density": 1100,
+  "friction": 1.10,
+  "restitution": 0.70
+}

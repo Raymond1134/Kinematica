@@ -1,0 +1,6 @@
+{
+  "name": "Plastic (HDPE)",
+  "density": 950,
+  "friction": 0.20,
+  "restitution": 0.15
+}

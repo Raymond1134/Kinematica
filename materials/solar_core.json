@@ -1,0 +1,6 @@
+{
+  "name": "Solar Core",
+  "density": 150000,
+  "friction": 0.01,
+  "restitution": 0.00
+}
