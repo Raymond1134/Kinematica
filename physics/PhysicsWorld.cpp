@@ -150,11 +150,8 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
     warmStartContacts(contacts);
 
     auto tSolve0 = clock::now();
-    int iterCount = solverIterations;
-
-    for (int pass = 0; pass < iterCount; ++pass) { solveContacts(contacts, pass == 0); }
-
-    if (restingFrictionExtraPasses > 0) { solveRestingFriction(contacts, restingFrictionExtraPasses); }
+    
+    solveIslands(contacts);
 
     auto tSolve1 = clock::now();
     perf.solveMs += std::chrono::duration<float, std::milli>(tSolve1 - tSolve0).count();
@@ -1705,23 +1702,42 @@ void PhysicsWorld::computeRestitutionTargets(std::vector<ContactManifold>& ms) {
 }
 
 void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPositionCorrection) {
+    std::vector<ContactManifold*> ptrs;
+    ptrs.reserve(ms.size());
+    for (auto& m : ms) ptrs.push_back(&m);
+    solveContacts(ptrs, applyPositionCorrection);
+}
+
+void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool applyPositionCorrection) {
     constexpr float slop = 0.005f;
     constexpr float shockLowerInvScale = 0.35f;
     constexpr float shockNormalY = 0.65f;
     const float beta = 0.2f;
 
-    for (ContactManifold& m : ms) {
-        if (!m.a) continue;
-        if (m.a->isStatic) continue;
-        if (m.a->sleeping) continue;
+    for (ContactManifold* mPtr : ms) {
+        if (!mPtr) continue;
+        ContactManifold& m = *mPtr;
+        
+        RigidBody* bodyA = m.a;
+        RigidBody* bodyB = m.b;
+        Vec3 normal = m.normal;
 
-        float invMassA = (!m.a->isStatic && m.a->mass > 0.0001f) ? (1.0f / m.a->mass) : 0.0f;
-        float invMassB = (m.b && !m.b->isStatic && !m.b->sleeping && m.b->mass > 0.0001f) ? (1.0f / m.b->mass) : 0.0f;
+        if (bodyA && bodyA->isStatic) {
+            std::swap(bodyA, bodyB);
+            normal = -normal;
+        }
+
+        if (!bodyA) continue;
+        if (bodyA->isStatic) continue;
+        if (bodyA->sleeping) continue;
+
+        float invMassA = (!bodyA->isStatic && bodyA->mass > 0.0001f) ? (1.0f / bodyA->mass) : 0.0f;
+        float invMassB = (bodyB && !bodyB->isStatic && !bodyB->sleeping && bodyB->mass > 0.0001f) ? (1.0f / bodyB->mass) : 0.0f;
         float invScaleA = 1.0f;
         float invScaleB = 1.0f;
 
-        if (m.b && !m.a->isStatic && !m.b->isStatic && fabsf(m.normal.y) >= shockNormalY) {
-            if (m.a->position.y < m.b->position.y) invScaleA = shockLowerInvScale;
+        if (bodyB && !bodyA->isStatic && !bodyB->isStatic && fabsf(normal.y) >= shockNormalY) {
+            if (bodyA->position.y < bodyB->position.y) invScaleA = shockLowerInvScale;
             else invScaleB = shockLowerInvScale;
         }
 
@@ -1737,18 +1753,18 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
             return invInertiaWorldMul(body, v) * invScale;
         };
 
-        m.a->hadContactThisStep = true;
-        m.a->sleeping = false;
-        m.a->sleepTimer = 0.0f;
-        if (m.b) {
-            m.b->hadContactThisStep = true;
-            if (!m.b->sleeping) { m.b->sleepTimer = 0.0f; }
+        bodyA->hadContactThisStep = true;
+        bodyA->sleeping = false;
+        bodyA->sleepTimer = 0.0f;
+        if (bodyB && !bodyB->isStatic) {
+            bodyB->hadContactThisStep = true;
+            if (!bodyB->sleeping) { bodyB->sleepTimer = 0.0f; }
         }
 
         (void)applyPositionCorrection;
 
         Vec3 t1, t2;
-        PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
+        PhysicsWorld::buildFrictionBasis(normal, t1, t2);
 
         float baumgarteFactor = beta / currentDt;
 
@@ -1756,19 +1772,19 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
             ContactPointState& cp = m.points[ci];
             if (!isFiniteVec3(cp.pointWorld)) continue;
             Vec3 p = cp.pointWorld;
-            Vec3 rA = p - m.a->position;
-            Vec3 rB = (m.b) ? (p - m.b->position) : Vec3{0.0f, 0.0f, 0.0f};
+            Vec3 rA = p - bodyA->position;
+            Vec3 rB = (bodyB) ? (p - bodyB->position) : Vec3{0.0f, 0.0f, 0.0f};
             {
-                Vec3 vA = m.a->velocity + Vec3::cross(m.a->angularVelocity, rA);
-                Vec3 vB = (m.b) ? (m.b->velocity + Vec3::cross(m.b->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
+                Vec3 vA = bodyA->velocity + Vec3::cross(bodyA->angularVelocity, rA);
+                Vec3 vB = (bodyB) ? (bodyB->velocity + Vec3::cross(bodyB->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
                 Vec3 relV = vB - vA;
-                float vn = Vec3::dot(relV, m.normal);
+                float vn = Vec3::dot(relV, normal);
                 
-                Vec3 rAxN = Vec3::cross(rA, m.normal);
-                float denomN = invMassA + Vec3::dot(m.normal, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxN, invScaleA), rA));
-                if (m.b) {
-                    Vec3 rBxN = Vec3::cross(rB, m.normal);
-                    denomN += invMassB + Vec3::dot(m.normal, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxN, invScaleB), rB));
+                Vec3 rAxN = Vec3::cross(rA, normal);
+                float denomN = invMassA + Vec3::dot(normal, Vec3::cross(invInertiaWorldMulScaled(bodyA, rAxN, invScaleA), rA));
+                if (bodyB) {
+                    Vec3 rBxN = Vec3::cross(rB, normal);
+                    denomN += invMassB + Vec3::dot(normal, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxN, invScaleB), rB));
                 }
 
                 if (denomN > 1e-6f) {
@@ -1785,18 +1801,18 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
                     float dN = newN - oldN;
                     cp.normalImpulse = newN;
 
-                    Vec3 Jn = m.normal * dN;
-                    if (m.b) {
-                        applyImpulseAtPoint(m.a, -Jn, p);
-                        applyImpulseAtPoint(m.b, Jn, p);
+                    Vec3 Jn = normal * dN;
+                    if (bodyB) {
+                        applyImpulseAtPoint(bodyA, -Jn, p);
+                        applyImpulseAtPoint(bodyB, Jn, p);
                     } else {
-                        applyImpulseAtPoint(m.a, -Jn, p);
+                        applyImpulseAtPoint(bodyA, -Jn, p);
                     }
                 }
             }
             {
-                Vec3 vA = m.a->velocity + Vec3::cross(m.a->angularVelocity, rA);
-                Vec3 vB = (m.b) ? (m.b->velocity + Vec3::cross(m.b->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
+                Vec3 vA = bodyA->velocity + Vec3::cross(bodyA->angularVelocity, rA);
+                Vec3 vB = (bodyB) ? (bodyB->velocity + Vec3::cross(bodyB->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
                 Vec3 relV = vB - vA;
 
                 float oldT1 = Vec3::dot(cp.tangentImpulse, t1);
@@ -1807,10 +1823,10 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
 
                 {
                     Vec3 rAxT = Vec3::cross(rA, t1);
-                    float denomT = invMassA + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxT, invScaleA), rA));
-                    if (m.b) {
+                    float denomT = invMassA + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(bodyA, rAxT, invScaleA), rA));
+                    if (bodyB) {
                         Vec3 rBxT = Vec3::cross(rB, t1);
-                        denomT += invMassB + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxT, invScaleB), rB));
+                        denomT += invMassB + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxT, invScaleB), rB));
                     }
                     if (denomT > 1e-6f) {
                         float vt = Vec3::dot(relV, t1);
@@ -1819,10 +1835,10 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
                 }
                 {
                     Vec3 rAxT = Vec3::cross(rA, t2);
-                    float denomT = invMassA + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxT, invScaleA), rA));
-                    if (m.b) {
+                    float denomT = invMassA + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(bodyA, rAxT, invScaleA), rA));
+                    if (bodyB) {
                         Vec3 rBxT = Vec3::cross(rB, t2);
-                        denomT += invMassB + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxT, invScaleB), rB));
+                        denomT += invMassB + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxT, invScaleB), rB));
                     }
                     if (denomT > 1e-6f) {
                         float vt = Vec3::dot(relV, t2);
@@ -1844,22 +1860,22 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
                 if (fabsf(dT1) > 0.0f || fabsf(dT2) > 0.0f) {
                     Vec3 Jt = t1 * dT1 + t2 * dT2;
                     cp.tangentImpulse = t1 * newT1 + t2 * newT2;
-                    if (m.b) {
-                        applyImpulseAtPoint(m.a, -Jt, p);
-                        applyImpulseAtPoint(m.b, Jt, p);
+                    if (bodyB) {
+                        applyImpulseAtPoint(bodyA, -Jt, p);
+                        applyImpulseAtPoint(bodyB, Jt, p);
                     } else {
-                        applyImpulseAtPoint(m.a, -Jt, p);
+                        applyImpulseAtPoint(bodyA, -Jt, p);
                     }
                 }
             }
             {
                 float wRelN = 0.0f;
-                if (m.b) wRelN = Vec3::dot((m.b->angularVelocity - m.a->angularVelocity), m.normal);
-                else wRelN = -Vec3::dot(m.a->angularVelocity, m.normal);
+                if (bodyB) wRelN = Vec3::dot((bodyB->angularVelocity - bodyA->angularVelocity), normal);
+                else wRelN = -Vec3::dot(bodyA->angularVelocity, normal);
 
                 if (fabsf(wRelN) > 1e-6f) {
-                    float denomTw = Vec3::dot(m.normal, invInertiaWorldMulScaled(m.a, m.normal, invScaleA));
-                    if (m.b) denomTw += Vec3::dot(m.normal, invInertiaWorldMulScaled(m.b, m.normal, invScaleB));
+                    float denomTw = Vec3::dot(normal, invInertiaWorldMulScaled(bodyA, normal, invScaleA));
+                    if (bodyB) denomTw += Vec3::dot(normal, invInertiaWorldMulScaled(bodyB, normal, invScaleB));
                     
                     if (denomTw > 1e-6f) {
                         float dW = (-wRelN / denomTw);
@@ -1874,39 +1890,36 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
                         float dTw = newW - oldW;
                         cp.twistImpulse = newW;
                         
-                        if (m.b) {
-                            applyAngularImpulse(m.a, m.normal * (-dTw));
-                            applyAngularImpulse(m.b, m.normal * (dTw));
+                        if (bodyB) {
+                            applyAngularImpulse(bodyA, normal * (-dTw));
+                            applyAngularImpulse(bodyB, normal * (dTw));
                         } else {
-                            applyAngularImpulse(m.a, m.normal * (-dTw));
+                            applyAngularImpulse(bodyA, normal * (-dTw));
                         }
                     }
                 }
             }
         }
-        if (applyPositionCorrection && m.b == nullptr &&
-            (m.a->collider.type == ColliderType::Sphere || m.a->collider.type == ColliderType::Capsule)) {
+        if (applyPositionCorrection && bodyB == nullptr &&
+            (bodyA->collider.type == ColliderType::Sphere || bodyA->collider.type == ColliderType::Capsule)) {
             float sumN = 0.0f;
             for (int i = 0; i < m.count; ++i) sumN += m.points[i].normalImpulse;
             if (sumN > 1e-4f) {
                 float ang = expf(-floorContactAngularDampingPerSecond * currentDt);
-                m.a->angularVelocity = m.a->angularVelocity * ang;
+                bodyA->angularVelocity = bodyA->angularVelocity * ang;
             }
-        }
-        for (int i = 0; i < m.count; ++i) {
-            if (!isFiniteVec3(m.points[i].pointWorld)) continue;
-            ContactKey key = makeContactKey(m.a, m.b, m.points[i].pointWorld);
-            CachedImpulse& c = contactCache[key];
-            c.normalImpulse = m.points[i].normalImpulse;
-            c.tangentImpulse = m.points[i].tangentImpulse;
-            c.twistImpulse = m.points[i].twistImpulse;
-            c.normalWorld = m.normal;
-            c.lastSeenFrame = frameId;
         }
     }
 }
 
 void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int passes) {
+    std::vector<ContactManifold*> ptrs;
+    ptrs.reserve(ms.size());
+    for (auto& m : ms) ptrs.push_back(&m);
+    solveRestingFriction(ptrs, passes);
+}
+
+void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms, int passes) {
     if (passes <= 0) return;
 
     constexpr float slop = 0.005f;
@@ -1914,18 +1927,31 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
     constexpr float shockNormalY = 0.65f;
 
     for (int pass = 0; pass < passes; ++pass) {
-        for (ContactManifold& m : ms) {
-            if (!m.a) continue;
-            if (m.a->isStatic) continue;
-            if (m.a->sleeping) continue;
+        for (ContactManifold* mPtr : ms) {
+            if (!mPtr) continue;
+            ContactManifold& m = *mPtr;
+            
+            RigidBody* bodyA = m.a;
+            RigidBody* bodyB = m.b;
+            Vec3 normal = m.normal;
 
-            float invMassA = (!m.a->isStatic && m.a->mass > 0.0001f) ? (1.0f / m.a->mass) : 0.0f;
-            float invMassB = (m.b && !m.b->isStatic && !m.b->sleeping && m.b->mass > 0.0001f) ? (1.0f / m.b->mass) : 0.0f;
+            // Ensure bodyA is the dynamic one if possible
+            if (bodyA && bodyA->isStatic) {
+                std::swap(bodyA, bodyB);
+                normal = -normal;
+            }
+
+            if (!bodyA) continue;
+            if (bodyA->isStatic) continue;
+            if (bodyA->sleeping) continue;
+
+            float invMassA = (!bodyA->isStatic && bodyA->mass > 0.0001f) ? (1.0f / bodyA->mass) : 0.0f;
+            float invMassB = (bodyB && !bodyB->isStatic && !bodyB->sleeping && bodyB->mass > 0.0001f) ? (1.0f / bodyB->mass) : 0.0f;
             float invScaleA = 1.0f;
             float invScaleB = 1.0f;
 
-            if (m.b && !m.a->isStatic && !m.b->isStatic && fabsf(m.normal.y) >= shockNormalY) {
-                if (m.a->position.y < m.b->position.y) invScaleA = shockLowerInvScale;
+            if (bodyB && !bodyA->isStatic && !bodyB->isStatic && fabsf(normal.y) >= shockNormalY) {
+                if (bodyA->position.y < bodyB->position.y) invScaleA = shockLowerInvScale;
                 else invScaleB = shockLowerInvScale;
             }
 
@@ -1933,14 +1959,14 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
             invMassB *= invScaleB;
             float totalInvMass = invMassA + invMassB;
             if (totalInvMass < 1e-8f) continue;
-            float vASq = m.a->velocity.lengthSq();
-            float wASq = m.a->angularVelocity.lengthSq();
+            float vASq = bodyA->velocity.lengthSq();
+            float wASq = bodyA->angularVelocity.lengthSq();
             if (vASq > restingMaxBodySpeed * restingMaxBodySpeed) continue;
             if (wASq > restingMaxBodyAngularSpeed * restingMaxBodyAngularSpeed) continue;
             
-            if (m.b) {
-                float vBSq = m.b->velocity.lengthSq();
-                float wBSq = m.b->angularVelocity.lengthSq();
+            if (bodyB) {
+                float vBSq = bodyB->velocity.lengthSq();
+                float wBSq = bodyB->angularVelocity.lengthSq();
                 if (vBSq > restingMaxBodySpeed * restingMaxBodySpeed) continue;
                 if (wBSq > restingMaxBodyAngularSpeed * restingMaxBodyAngularSpeed) continue;
             }
@@ -1961,20 +1987,20 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
             if (totalInvMass > 1e-6f) { supportImpulse = (fabsf(gravity.y) * currentDt / totalInvMass) * invCount;}
 
             Vec3 t1, t2;
-            PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
+            PhysicsWorld::buildFrictionBasis(normal, t1, t2);
 
             for (int ci = 0; ci < m.count; ++ci) {
                 ContactPointState& cp = m.points[ci];
                 if (!isFiniteVec3(cp.pointWorld)) continue;
 
                 Vec3 p = cp.pointWorld;
-                Vec3 rA = p - m.a->position;
-                Vec3 rB = (m.b) ? (p - m.b->position) : Vec3{0.0f, 0.0f, 0.0f};
-                Vec3 vA = m.a->velocity + Vec3::cross(m.a->angularVelocity, rA);
-                Vec3 vB = (m.b) ? (m.b->velocity + Vec3::cross(m.b->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
+                Vec3 rA = p - bodyA->position;
+                Vec3 rB = (bodyB) ? (p - bodyB->position) : Vec3{0.0f, 0.0f, 0.0f};
+                Vec3 vA = bodyA->velocity + Vec3::cross(bodyA->angularVelocity, rA);
+                Vec3 vB = (bodyB) ? (bodyB->velocity + Vec3::cross(bodyB->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
                 Vec3 relV = vB - vA;
 
-                float vn = Vec3::dot(relV, m.normal);
+                float vn = Vec3::dot(relV, normal);
                 if (fabsf(vn) > restingMaxNormalSpeed) continue;
 
 
@@ -1985,10 +2011,10 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
 
                 {
                     Vec3 rAxT = Vec3::cross(rA, t1);
-                    float denomT = invMassA + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxT, invScaleA), rA));
-                    if (m.b) {
+                    float denomT = invMassA + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(bodyA, rAxT, invScaleA), rA));
+                    if (bodyB) {
                         Vec3 rBxT = Vec3::cross(rB, t1);
-                        denomT += invMassB + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxT, invScaleB), rB));
+                        denomT += invMassB + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxT, invScaleB), rB));
                     }
                     if (denomT > 1e-6f) {
                         float vt = Vec3::dot(relV, t1);
@@ -1998,10 +2024,10 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
 
                 {
                     Vec3 rAxT = Vec3::cross(rA, t2);
-                    float denomT = invMassA + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxT, invScaleA), rA));
-                    if (m.b) {
+                    float denomT = invMassA + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(bodyA, rAxT, invScaleA), rA));
+                    if (bodyB) {
                         Vec3 rBxT = Vec3::cross(rB, t2);
-                        denomT += invMassB + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxT, invScaleB), rB));
+                        denomT += invMassB + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxT, invScaleB), rB));
                     }
                     if (denomT > 1e-6f) {
                         float vt = Vec3::dot(relV, t2);
@@ -2024,21 +2050,21 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
                 if (dT1 != 0.0f || dT2 != 0.0f) {
                     Vec3 Jt = t1 * dT1 + t2 * dT2;
                     cp.tangentImpulse = t1 * newT1 + t2 * newT2;
-                    if (m.b) {
-                        applyImpulseAtPoint(m.a, -Jt, p);
-                        applyImpulseAtPoint(m.b, Jt, p);
+                    if (bodyB) {
+                        applyImpulseAtPoint(bodyA, -Jt, p);
+                        applyImpulseAtPoint(bodyB, Jt, p);
                     } else {
-                        applyImpulseAtPoint(m.a, -Jt, p);
+                        applyImpulseAtPoint(bodyA, -Jt, p);
                     }
                 }
 
                 float wRelN = 0.0f;
-                if (m.b) wRelN = Vec3::dot((m.b->angularVelocity - m.a->angularVelocity), m.normal);
-                else wRelN = -Vec3::dot(m.a->angularVelocity, m.normal);
+                if (bodyB) wRelN = Vec3::dot((bodyB->angularVelocity - bodyA->angularVelocity), normal);
+                else wRelN = -Vec3::dot(bodyA->angularVelocity, normal);
 
                 if (fabsf(wRelN) > 1e-6f) {
-                    float denomTw = Vec3::dot(m.normal, invInertiaWorldMulScaled(m.a, m.normal, invScaleA));
-                    if (m.b) denomTw += Vec3::dot(m.normal, invInertiaWorldMulScaled(m.b, m.normal, invScaleB));
+                    float denomTw = Vec3::dot(normal, invInertiaWorldMulScaled(bodyA, normal, invScaleA));
+                    if (bodyB) denomTw += Vec3::dot(normal, invInertiaWorldMulScaled(bodyB, normal, invScaleB));
                     if (denomTw > 1e-6f) {
                         float dW = (-wRelN / denomTw);
                         float oldW = cp.twistImpulse;
@@ -2050,16 +2076,143 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
                         cp.twistImpulse = newW;
 
                         if (dTw != 0.0f) {
-                            if (m.b) {
-                                applyAngularImpulse(m.a, m.normal * (-dTw));
-                                applyAngularImpulse(m.b, m.normal * (dTw));
+                            if (bodyB) {
+                                applyAngularImpulse(bodyA, normal * (-dTw));
+                                applyAngularImpulse(bodyB, normal * (dTw));
                             } else {
-                                applyAngularImpulse(m.a, m.normal * (-dTw));
+                                applyAngularImpulse(bodyA, normal * (-dTw));
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+#include <numeric>
+
+void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
+    int dynamicCount = 0;
+    for (RigidBody* b : bodies) {
+        if (!b) continue;
+        if (!b->isStatic && !b->sleeping) {
+            b->solverIndex = dynamicCount++;
+        } else {
+            b->solverIndex = -1;
+        }
+    }
+
+    if (dynamicCount == 0) return;
+
+    if ((int)islandParentBuffer.size() < dynamicCount) {
+        islandParentBuffer.resize(dynamicCount);
+    }
+    std::iota(islandParentBuffer.begin(), islandParentBuffer.begin() + dynamicCount, 0);
+    
+    auto find = [&](int i) {
+        int root = i;
+        while (root != islandParentBuffer[root]) root = islandParentBuffer[root];
+        int curr = i;
+        while (curr != root) { int next = islandParentBuffer[curr]; islandParentBuffer[curr] = root; curr = next; }
+        return root;
+    };
+    
+    auto unite = [&](int i, int j) {
+        int rootI = find(i);
+        int rootJ = find(j);
+        if (rootI != rootJ) islandParentBuffer[rootI] = rootJ;
+    };
+
+    for (const auto& m : contacts) {
+        if (m.a && m.b && !m.a->isStatic && !m.b->isStatic && 
+            m.a->solverIndex != -1 && m.b->solverIndex != -1) {
+             unite(m.a->solverIndex, m.b->solverIndex);
+        }
+    }
+
+    if ((int)islandRootToIdBuffer.size() < dynamicCount) {
+        islandRootToIdBuffer.resize(dynamicCount);
+    }
+    std::fill(islandRootToIdBuffer.begin(), islandRootToIdBuffer.begin() + dynamicCount, -1);
+    
+    if ((int)islandBuffer.size() < dynamicCount) {
+        islandBuffer.resize(dynamicCount);
+        for (int i = 0; i < dynamicCount; ++i) {
+            if (islandBuffer[i].capacity() < 32) islandBuffer[i].reserve(32);
+        }
+    }
+    
+    int islandCount = 0;
+    
+    for (auto& m : contacts) {
+        RigidBody* dyn = nullptr;
+        if (m.a && !m.a->isStatic && m.a->solverIndex != -1) dyn = m.a;
+        else if (m.b && !m.b->isStatic && m.b->solverIndex != -1) dyn = m.b;
+        
+        if (!dyn) continue;
+        
+        int root = find(dyn->solverIndex);
+        int islandId = islandRootToIdBuffer[root];
+        
+        if (islandId == -1) {
+            islandId = islandCount++;
+            islandRootToIdBuffer[root] = islandId;
+            islandBuffer[islandId].clear();
+        }
+        islandBuffer[islandId].push_back(&m);
+    }
+
+    const int nIslands = islandCount;
+    const int iterCount = solverIterations;
+    const int restPasses = restingFrictionExtraPasses;
+
+    if (nIslands > 1) {
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < nIslands; ++i) {
+            const std::vector<ContactManifold*>& islandContacts = islandBuffer[i];
+            
+            for (int pass = 0; pass < iterCount; ++pass) {
+                solveContacts(islandContacts, pass == 0);
+            }
+            
+            if (restPasses > 0) {
+                solveRestingFriction(islandContacts, restPasses);
+            }
+        }
+    } else if (nIslands == 1) {
+        const std::vector<ContactManifold*>& islandContacts = islandBuffer[0];
+        for (int pass = 0; pass < iterCount; ++pass) {
+            solveContacts(islandContacts, pass == 0);
+        }
+        if (restPasses > 0) {
+            solveRestingFriction(islandContacts, restPasses);
+        }
+    }
+
+    for (const auto& m : contacts) {
+        RigidBody* bodyA = m.a;
+        RigidBody* bodyB = m.b;
+        Vec3 normal = m.normal;
+
+        if (bodyA && bodyA->isStatic) {
+            std::swap(bodyA, bodyB);
+            normal = -normal;
+        }
+
+        if (!bodyA) continue;
+        if (bodyA->isStatic) continue;
+        if (bodyA->sleeping) continue;
+
+        for (int i = 0; i < m.count; ++i) {
+            if (!isFiniteVec3(m.points[i].pointWorld)) continue;
+            ContactKey key = makeContactKey(bodyA, bodyB, m.points[i].pointWorld);
+            CachedImpulse& c = contactCache[key];
+            c.normalImpulse = m.points[i].normalImpulse;
+            c.tangentImpulse = m.points[i].tangentImpulse;
+            c.twistImpulse = m.points[i].twistImpulse;
+            c.normalWorld = normal;
+            c.lastSeenFrame = frameId;
         }
     }
 }

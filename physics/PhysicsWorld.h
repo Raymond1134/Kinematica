@@ -206,7 +206,11 @@ public:
 
     void computeRestitutionTargets(std::vector<ContactManifold>& ms);
     void solveContacts(std::vector<ContactManifold>& ms, bool applyPositionCorrection);
+    void solveContacts(const std::vector<ContactManifold*>& ms, bool applyPositionCorrection);
     void solveRestingFriction(std::vector<ContactManifold>& ms, int passes);
+    void solveRestingFriction(const std::vector<ContactManifold*>& ms, int passes);
+    void solveIslands(std::vector<ContactManifold>& contacts);
+
     static RigidBody makeChildProxyBody(const RigidBody* parent, const CompoundChild& child);
     static void orientNormalForPair(ContactManifold& m, const RigidBody* a, const RigidBody* b);
     void appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out, EPAScratch& epaScratch);
@@ -217,6 +221,10 @@ public:
     float characteristicContactRadius(const RigidBody* body) const;
 
 private:
+    std::vector<std::vector<ContactManifold*>> islandBuffer;
+    std::vector<int> islandParentBuffer;
+    std::vector<int> islandRootToIdBuffer;
+
     void stepSubstep(float deltaTime, bool isFinalSubstep);
     int computeCcdSubsteps(float deltaTime) const;
 };

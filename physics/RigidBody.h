@@ -17,6 +17,7 @@ struct RigidBody {
     bool sleeping = false;
     float sleepTimer = 0.0f;
     bool hadContactThisStep = false;
+    int solverIndex = -1;
     
     Vec3 getInvInertiaBody() const {
         if (isStatic) return {0.0f, 0.0f, 0.0f};

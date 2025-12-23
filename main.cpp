@@ -637,7 +637,7 @@ static float uiSlider(int id, Rectangle r, float value, float minV, float maxV, 
 }
 
 int main() {
-    const float FIXED_DT = 1.0f / 60.0f;
+    const float FIXED_DT = 1.0f / 6000.0f;
     float accumulator = 0.0f;
 
     const int MAX_SUBSTEPS = 4;
