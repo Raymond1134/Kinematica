@@ -151,8 +151,6 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
 
     auto tSolve0 = clock::now();
     int iterCount = solverIterations;
-    if (perf.awake > 48) iterCount = std::min(iterCount, 10);
-    else if (perf.awake > 24) iterCount = std::min(iterCount, 14);
 
     for (int pass = 0; pass < iterCount; ++pass) { solveContacts(contacts, pass == 0); }
 
@@ -459,9 +457,69 @@ void PhysicsWorld::buildSapCandidates() {
                 outMax = b->position + e;
                 return;
             }
-            case ColliderType::Convex:
-            case ColliderType::Compound:
+            case ColliderType::Convex: {
+                if (b->collider.polyhedron) {
+                    Vec3 minV, maxV;
+                    {
+                        Vec3 dir = {1.0f, 0.0f, 0.0f};
+                        Vec3 sup = b->collider.support(b->orientation.rotateInv(dir));
+                        maxV.x = (b->orientation.rotate(sup) + b->position).x;
+                        sup = b->collider.support(b->orientation.rotateInv(-dir));
+                        minV.x = (b->orientation.rotate(sup) + b->position).x;
+                    }
+                    {
+                        Vec3 dir = {0.0f, 1.0f, 0.0f};
+                        Vec3 sup = b->collider.support(b->orientation.rotateInv(dir));
+                        maxV.y = (b->orientation.rotate(sup) + b->position).y;
+                        sup = b->collider.support(b->orientation.rotateInv(-dir));
+                        minV.y = (b->orientation.rotate(sup) + b->position).y;
+                    }
+                    {
+                        Vec3 dir = {0.0f, 0.0f, 1.0f};
+                        Vec3 sup = b->collider.support(b->orientation.rotateInv(dir));
+                        maxV.z = (b->orientation.rotate(sup) + b->position).z;
+                        sup = b->collider.support(b->orientation.rotateInv(-dir));
+                        minV.z = (b->orientation.rotate(sup) + b->position).z;
+                    }
+                    outMin = minV;
+                    outMax = maxV;
+                    return;
+                }
+                float r = b->collider.boundingRadius();
+                Vec3 e{r, r, r};
+                outMin = b->position - e;
+                outMax = b->position + e;
+                return;
+            }
             case ColliderType::Mesh: {
+                if (b->collider.mesh) {
+                    const TriangleMesh& mesh = *static_cast<const TriangleMesh*>(b->collider.mesh.get());
+                    Vec3 minL = mesh.localBounds.min;
+                    Vec3 maxL = mesh.localBounds.max;
+                    Vec3 centerL = (minL + maxL) * 0.5f;
+                    Vec3 heL = (maxL - minL) * 0.5f;
+                    
+                    Vec3 ax = absf3(b->orientation.rotate({1.0f, 0.0f, 0.0f}));
+                    Vec3 ay = absf3(b->orientation.rotate({0.0f, 1.0f, 0.0f}));
+                    Vec3 az = absf3(b->orientation.rotate({0.0f, 0.0f, 1.0f}));
+                    
+                    Vec3 e{
+                        ax.x * heL.x + ay.x * heL.y + az.x * heL.z,
+                        ax.y * heL.x + ay.y * heL.y + az.y * heL.z,
+                        ax.z * heL.x + ay.z * heL.y + az.z * heL.z,
+                    };
+                    Vec3 centerW = b->orientation.rotate(centerL) + b->position;
+                    outMin = centerW - e;
+                    outMax = centerW + e;
+                    return;
+                }
+                float r = b->collider.boundingRadius();
+                Vec3 e{r, r, r};
+                outMin = b->position - e;
+                outMax = b->position + e;
+                return;
+            }
+            case ColliderType::Compound: {
                 float r = b->collider.boundingRadius();
                 Vec3 e{r, r, r};
                 outMin = b->position - e;
@@ -655,12 +713,12 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
 }
 
 void PhysicsWorld::warmStartContacts(std::vector<ContactManifold>& ms) {
-    constexpr float warmN = 0.95f;
-    constexpr float warmT = 0.70f;
-    constexpr float warmW = 0.70f;
+    constexpr float warmN = 1.0f;
+    constexpr float warmT = 1.0f;
+    constexpr float warmW = 1.0f;
 
-    constexpr float minNormalAlign = 0.85f;
-    constexpr float minTwistAlign = 0.95f;
+    constexpr float minNormalAlign = 0.90f;
+    constexpr float minTwistAlign = 0.98f;
 
     for (ContactManifold& m : ms) {
         const bool hasMesh =
@@ -693,7 +751,7 @@ void PhysicsWorld::warmStartContacts(std::vector<ContactManifold>& ms) {
             Vec3 t0 = {0.0f, 0.0f, 0.0f};
             float w0 = 0.0f;
 
-            if (m.points[i].penetration > 0.0f) {
+            if (m.points[i].penetration > -0.01f) {
                 if (!hasMesh) {
                     t0 = c.tangentImpulse * warmT;
                     t0 = t0 - m.normal * Vec3::dot(t0, m.normal);
@@ -1647,10 +1705,10 @@ void PhysicsWorld::computeRestitutionTargets(std::vector<ContactManifold>& ms) {
 }
 
 void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPositionCorrection) {
-    constexpr float slop = 0.008f;
-    constexpr float maxPositionCorrection = 0.05f;
+    constexpr float slop = 0.005f;
     constexpr float shockLowerInvScale = 0.35f;
     constexpr float shockNormalY = 0.65f;
+    const float beta = 0.2f;
 
     for (ContactManifold& m : ms) {
         if (!m.a) continue;
@@ -1687,31 +1745,12 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
             if (!m.b->sleeping) { m.b->sleepTimer = 0.0f; }
         }
 
-        if (applyPositionCorrection) {
-            float maxPen = 0.0f;
-            for (int i = 0; i < m.count; ++i) if (m.points[i].penetration > maxPen) maxPen = m.points[i].penetration;
+        (void)applyPositionCorrection;
 
-            float corrMag = (maxPen - slop > 0.0f) ? (maxPen - slop) : 0.0f;
-            if (corrMag > maxPositionCorrection) corrMag = maxPositionCorrection;
+        Vec3 t1, t2;
+        PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
 
-            if (corrMag > 0.0f) {
-                float corrRatio = (m.b == nullptr || m.b->isStatic) ? 0.70f : 0.55f;
-                Vec3 corr = m.normal * (corrMag * corrRatio);
-                if (m.b) {
-                    if (!m.a->isStatic) m.a->position = m.a->position - corr * (invMassA / totalInvMass);
-                    if (!m.b->isStatic) m.b->position = m.b->position + corr * (invMassB / totalInvMass);
-                } else {
-                    if (!m.a->isStatic) m.a->position = m.a->position - corr;
-                }
-            }
-        }
-
-        float invCount = 1.0f / (float)m.count;
-        float supportImpulse = 0.0f;
-        if (totalInvMass > 1e-6f && m.count > 0) {
-            float gravityMag = gravity.length();
-            supportImpulse = (gravityMag * currentDt / totalInvMass) * invCount * 0.5f;
-        }
+        float baumgarteFactor = beta / currentDt;
 
         for (int ci = 0; ci < m.count; ++ci) {
             ContactPointState& cp = m.points[ci];
@@ -1719,122 +1758,132 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
             Vec3 p = cp.pointWorld;
             Vec3 rA = p - m.a->position;
             Vec3 rB = (m.b) ? (p - m.b->position) : Vec3{0.0f, 0.0f, 0.0f};
-            Vec3 vA = m.a->velocity + Vec3::cross(m.a->angularVelocity, rA);
-            Vec3 vB = (m.b) ? (m.b->velocity + Vec3::cross(m.b->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
-            Vec3 relV = vB - vA;
-            float vn = Vec3::dot(relV, m.normal);
-            Vec3 rAxN = Vec3::cross(rA, m.normal);
-            float denomN = invMassA + Vec3::dot(m.normal, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxN, invScaleA), rA));
-
-            if (m.b) {
-                Vec3 rBxN = Vec3::cross(rB, m.normal);
-                denomN += invMassB + Vec3::dot(m.normal, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxN, invScaleB), rB));
-            }
-            if (denomN < 1e-6f) continue;
-
-            float bias = 0.0f;
-            if (cp.penetration > slop) {
-                bias = (cp.penetration - slop) * 0.15f;
-            }
-
-            float desired = -(vn - (cp.targetNormalVelocity + bias)) / denomN;
-            float oldN = cp.normalImpulse;
-            float newN = oldN + desired;
-            if (newN < 0.0f) newN = 0.0f;
-            float dN = newN - oldN;
-            cp.normalImpulse = newN;
-
-            Vec3 Jn = m.normal * dN;
-            if (m.b) {
-                applyImpulseAtPoint(m.a, -Jn, p);
-                applyImpulseAtPoint(m.b, Jn, p);
-            } else {
-                applyImpulseAtPoint(m.a, -Jn, p);
-            }
-
-            vA = m.a->velocity + Vec3::cross(m.a->angularVelocity, rA);
-            vB = (m.b) ? (m.b->velocity + Vec3::cross(m.b->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
-            relV = vB - vA;
-
-            Vec3 t1, t2;
-            PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
-
-            float oldT1 = Vec3::dot(cp.tangentImpulse, t1);
-            float oldT2 = Vec3::dot(cp.tangentImpulse, t2);
-            float newT1 = oldT1;
-            float newT2 = oldT2;
-
             {
-                Vec3 rAxT = Vec3::cross(rA, t1);
-                float denomT = invMassA + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxT, invScaleA), rA));
+                Vec3 vA = m.a->velocity + Vec3::cross(m.a->angularVelocity, rA);
+                Vec3 vB = (m.b) ? (m.b->velocity + Vec3::cross(m.b->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
+                Vec3 relV = vB - vA;
+                float vn = Vec3::dot(relV, m.normal);
+                
+                Vec3 rAxN = Vec3::cross(rA, m.normal);
+                float denomN = invMassA + Vec3::dot(m.normal, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxN, invScaleA), rA));
                 if (m.b) {
-                    Vec3 rBxT = Vec3::cross(rB, t1);
-                    denomT += invMassB + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxT, invScaleB), rB));
+                    Vec3 rBxN = Vec3::cross(rB, m.normal);
+                    denomN += invMassB + Vec3::dot(m.normal, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxN, invScaleB), rB));
                 }
-                if (denomT > 1e-6f) {
-                    float vt = Vec3::dot(relV, t1);
-                    newT1 = oldT1 + (-vt / denomT);
-                }
-            }
-            {
-                Vec3 rAxT = Vec3::cross(rA, t2);
-                float denomT = invMassA + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxT, invScaleA), rA));
-                if (m.b) {
-                    Vec3 rBxT = Vec3::cross(rB, t2);
-                    denomT += invMassB + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxT, invScaleB), rB));
-                }
-                if (denomT > 1e-6f) {
-                    float vt = Vec3::dot(relV, t2);
-                    newT2 = oldT2 + (-vt / denomT);
-                }
-            }
-            float nRef = (cp.normalImpulse > supportImpulse) ? cp.normalImpulse : supportImpulse;
-            float maxF = m.friction * nRef;
-            float magSq = newT1 * newT1 + newT2 * newT2;
-            if (magSq > maxF * maxF && magSq > 1e-12f) {
-                float invMag = 1.0f / sqrtf(magSq);
-                float s = maxF * invMag;
-                newT1 *= s;
-                newT2 *= s;
-            }
-            float dT1 = newT1 - oldT1;
-            float dT2 = newT2 - oldT2;
-            if (fabsf(dT1) > 0.0f || fabsf(dT2) > 0.0f) {
-                Vec3 Jt = t1 * dT1 + t2 * dT2;
-                cp.tangentImpulse = t1 * newT1 + t2 * newT2;
-                if (m.b) {
-                    applyImpulseAtPoint(m.a, -Jt, p);
-                    applyImpulseAtPoint(m.b, Jt, p);
-                } else {
-                    applyImpulseAtPoint(m.a, -Jt, p);
-                }
-            }
-            float wRelN = 0.0f;
-            if (m.b) wRelN = Vec3::dot((m.b->angularVelocity - m.a->angularVelocity), m.normal);
-            else wRelN = -Vec3::dot(m.a->angularVelocity, m.normal);
-            if (fabsf(wRelN) > 1e-6f) {
-                float denomTw = Vec3::dot(m.normal, invInertiaWorldMulScaled(m.a, m.normal, invScaleA));
-                if (m.b) denomTw += Vec3::dot(m.normal, invInertiaWorldMulScaled(m.b, m.normal, invScaleB));
-                if (denomTw > 1e-6f) {
-                    float dW = (-wRelN / denomTw);
-                    float oldW = cp.twistImpulse;
-                    float newW = oldW + dW;
-                    float nRef = (cp.normalImpulse > supportImpulse) ? cp.normalImpulse : supportImpulse;
-                    float maxTw = m.frictionTwist * nRef * m.patchR;
-                    if (newW > maxTw) newW = maxTw;
-                    if (newW < -maxTw) newW = -maxTw;
-                    float dTw = newW - oldW;
-                    cp.twistImpulse = newW;
+
+                if (denomN > 1e-6f) {
+                    float bias = 0.0f;
+                    if (cp.penetration > slop) {
+                        bias = baumgarteFactor * (cp.penetration - slop);
+                        if (bias > 2.0f) bias = 2.0f;
+                    }
+
+                    float desired = -(vn - cp.targetNormalVelocity - bias) / denomN;
+                    float oldN = cp.normalImpulse;
+                    float newN = oldN + desired;
+                    if (newN < 0.0f) newN = 0.0f;
+                    float dN = newN - oldN;
+                    cp.normalImpulse = newN;
+
+                    Vec3 Jn = m.normal * dN;
                     if (m.b) {
-                        applyAngularImpulse(m.a, m.normal * (-dTw));
-                        applyAngularImpulse(m.b, m.normal * (dTw));
+                        applyImpulseAtPoint(m.a, -Jn, p);
+                        applyImpulseAtPoint(m.b, Jn, p);
                     } else {
-                        applyAngularImpulse(m.a, m.normal * (-dTw));
+                        applyImpulseAtPoint(m.a, -Jn, p);
+                    }
+                }
+            }
+            {
+                Vec3 vA = m.a->velocity + Vec3::cross(m.a->angularVelocity, rA);
+                Vec3 vB = (m.b) ? (m.b->velocity + Vec3::cross(m.b->angularVelocity, rB)) : Vec3{0.0f, 0.0f, 0.0f};
+                Vec3 relV = vB - vA;
+
+                float oldT1 = Vec3::dot(cp.tangentImpulse, t1);
+                float oldT2 = Vec3::dot(cp.tangentImpulse, t2);
+                float newT1 = oldT1;
+                float newT2 = oldT2;
+
+
+                {
+                    Vec3 rAxT = Vec3::cross(rA, t1);
+                    float denomT = invMassA + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxT, invScaleA), rA));
+                    if (m.b) {
+                        Vec3 rBxT = Vec3::cross(rB, t1);
+                        denomT += invMassB + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxT, invScaleB), rB));
+                    }
+                    if (denomT > 1e-6f) {
+                        float vt = Vec3::dot(relV, t1);
+                        newT1 = oldT1 + (-vt / denomT);
+                    }
+                }
+                {
+                    Vec3 rAxT = Vec3::cross(rA, t2);
+                    float denomT = invMassA + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(m.a, rAxT, invScaleA), rA));
+                    if (m.b) {
+                        Vec3 rBxT = Vec3::cross(rB, t2);
+                        denomT += invMassB + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(m.b, rBxT, invScaleB), rB));
+                    }
+                    if (denomT > 1e-6f) {
+                        float vt = Vec3::dot(relV, t2);
+                        newT2 = oldT2 + (-vt / denomT);
+                    }
+                }
+                float nRef = cp.normalImpulse;
+                float maxF = m.friction * nRef;
+                float magSq = newT1 * newT1 + newT2 * newT2;
+                if (magSq > maxF * maxF && magSq > 1e-12f) {
+                    float invMag = 1.0f / sqrtf(magSq);
+                    float s = maxF * invMag;
+                    newT1 *= s;
+                    newT2 *= s;
+                }
+
+                float dT1 = newT1 - oldT1;
+                float dT2 = newT2 - oldT2;
+                if (fabsf(dT1) > 0.0f || fabsf(dT2) > 0.0f) {
+                    Vec3 Jt = t1 * dT1 + t2 * dT2;
+                    cp.tangentImpulse = t1 * newT1 + t2 * newT2;
+                    if (m.b) {
+                        applyImpulseAtPoint(m.a, -Jt, p);
+                        applyImpulseAtPoint(m.b, Jt, p);
+                    } else {
+                        applyImpulseAtPoint(m.a, -Jt, p);
+                    }
+                }
+            }
+            {
+                float wRelN = 0.0f;
+                if (m.b) wRelN = Vec3::dot((m.b->angularVelocity - m.a->angularVelocity), m.normal);
+                else wRelN = -Vec3::dot(m.a->angularVelocity, m.normal);
+
+                if (fabsf(wRelN) > 1e-6f) {
+                    float denomTw = Vec3::dot(m.normal, invInertiaWorldMulScaled(m.a, m.normal, invScaleA));
+                    if (m.b) denomTw += Vec3::dot(m.normal, invInertiaWorldMulScaled(m.b, m.normal, invScaleB));
+                    
+                    if (denomTw > 1e-6f) {
+                        float dW = (-wRelN / denomTw);
+                        float oldW = cp.twistImpulse;
+                        float newW = oldW + dW;
+                        
+                        float nRef = cp.normalImpulse;
+                        float maxTw = m.frictionTwist * nRef * m.patchR;
+                        if (newW > maxTw) newW = maxTw;
+                        if (newW < -maxTw) newW = -maxTw;
+                        
+                        float dTw = newW - oldW;
+                        cp.twistImpulse = newW;
+                        
+                        if (m.b) {
+                            applyAngularImpulse(m.a, m.normal * (-dTw));
+                            applyAngularImpulse(m.b, m.normal * (dTw));
+                        } else {
+                            applyAngularImpulse(m.a, m.normal * (-dTw));
+                        }
                     }
                 }
             }
         }
-
         if (applyPositionCorrection && m.b == nullptr &&
             (m.a->collider.type == ColliderType::Sphere || m.a->collider.type == ColliderType::Capsule)) {
             float sumN = 0.0f;
@@ -1844,7 +1893,6 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
                 m.a->angularVelocity = m.a->angularVelocity * ang;
             }
         }
-
         for (int i = 0; i < m.count; ++i) {
             if (!isFiniteVec3(m.points[i].pointWorld)) continue;
             ContactKey key = makeContactKey(m.a, m.b, m.points[i].pointWorld);
@@ -1861,7 +1909,7 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
 void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int passes) {
     if (passes <= 0) return;
 
-    constexpr float slop = 0.008f;
+    constexpr float slop = 0.005f;
     constexpr float shockLowerInvScale = 0.35f;
     constexpr float shockNormalY = 0.65f;
 
@@ -1912,6 +1960,9 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
             float supportImpulse = 0.0f;
             if (totalInvMass > 1e-6f) { supportImpulse = (fabsf(gravity.y) * currentDt / totalInvMass) * invCount;}
 
+            Vec3 t1, t2;
+            PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
+
             for (int ci = 0; ci < m.count; ++ci) {
                 ContactPointState& cp = m.points[ci];
                 if (!isFiniteVec3(cp.pointWorld)) continue;
@@ -1926,8 +1977,6 @@ void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int pa
                 float vn = Vec3::dot(relV, m.normal);
                 if (fabsf(vn) > restingMaxNormalSpeed) continue;
 
-                Vec3 t1, t2;
-                PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
 
                 float oldT1 = Vec3::dot(cp.tangentImpulse, t1);
                 float oldT2 = Vec3::dot(cp.tangentImpulse, t2);
@@ -2711,10 +2760,28 @@ bool PhysicsWorld::collideMeshBox(const RigidBody* meshBody, const RigidBody* bo
 
     const Vec3 he = boxBody->collider.box.halfExtents;
 
-    float r = he.length();
-    Vec3 cLocal = meshBody->orientation.rotateInv(boxBody->position - meshBody->position);
-    Vec3 qMin = cLocal - Vec3{r, r, r};
-    Vec3 qMax = cLocal + Vec3{r, r, r};
+    Vec3 boxCenterLocal = meshBody->orientation.rotateInv(boxBody->position - meshBody->position);
+    Quat relRot = meshBody->orientation.conjugate() * boxBody->orientation;
+    
+    Vec3 axes[3] = {
+        relRot.rotate({1.0f, 0.0f, 0.0f}),
+        relRot.rotate({0.0f, 1.0f, 0.0f}),
+        relRot.rotate({0.0f, 0.0f, 1.0f})
+    };
+    
+    Vec3 absAxes[3] = {
+        {fabsf(axes[0].x), fabsf(axes[0].y), fabsf(axes[0].z)},
+        {fabsf(axes[1].x), fabsf(axes[1].y), fabsf(axes[1].z)},
+        {fabsf(axes[2].x), fabsf(axes[2].y), fabsf(axes[2].z)}
+    };
+    
+    Vec3 extent = 
+        absAxes[0] * he.x + 
+        absAxes[1] * he.y + 
+        absAxes[2] * he.z;
+        
+    Vec3 qMin = boxCenterLocal - extent;
+    Vec3 qMax = boxCenterLocal + extent;
 
     std::vector<uint32_t> triIds;
     triIds.reserve(256);

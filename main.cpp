@@ -682,9 +682,9 @@ int main() {
         const MaterialProps* woodMat = findMaterialByPrefix("Wood");
         const MaterialProps wallMaterial = woodMat ? *woodMat : customTemplate;
 
-        constexpr int wallW = 10;
-        constexpr int wallH = 10;
-        const Vec3 half = {0.25f, 0.25f, 0.25f};
+        constexpr int wallW = 16;
+        constexpr int wallH = 16;
+        const Vec3 half = {0.1f, 0.1f, 0.1f};
         const float spacingX = half.x * 2.0f;
         const float spacingY = half.y * 2.0f;
 
