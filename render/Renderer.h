@@ -5,6 +5,7 @@
 #include <vector>
 #include <cstdint>
 #include <raylib.h>
+#include <unordered_map>
 
 struct RigidBody;
 struct TriangleMesh;
@@ -48,4 +49,15 @@ private:
     };
     mutable std::vector<MeshEdgeCache> meshEdgeCaches;
     const std::vector<Edge>& getMeshBoundaryEdges(const TriangleMesh& mesh) const;
+
+    Mesh cubeMesh = { 0 };
+    Mesh sphereMesh = { 0 };
+    bool meshesInitialized = false;
+
+    struct InstanceData {
+        Matrix transform;
+        Color color;
+    };
+    std::unordered_map<unsigned int, std::vector<Matrix>> cubeInstances;
+    std::unordered_map<unsigned int, std::vector<Matrix>> sphereInstances;
 };

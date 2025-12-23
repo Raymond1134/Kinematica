@@ -637,7 +637,7 @@ static float uiSlider(int id, Rectangle r, float value, float minV, float maxV, 
 }
 
 int main() {
-    const float FIXED_DT = 1.0f / 6000.0f;
+    const float FIXED_DT = 1.0f / 60.0f;
     float accumulator = 0.0f;
 
     const int MAX_SUBSTEPS = 4;
@@ -682,40 +682,44 @@ int main() {
         const MaterialProps* woodMat = findMaterialByPrefix("Wood");
         const MaterialProps wallMaterial = woodMat ? *woodMat : customTemplate;
 
-        constexpr int wallW = 16;
-        constexpr int wallH = 16;
-        const Vec3 half = {0.1f, 0.1f, 0.1f};
+        constexpr int wallW = 8;
+        constexpr int wallH = 8;
+        constexpr int wallD = 2;
+        const Vec3 half = {0.5f, 0.5f, 0.5f};
         const float spacingX = half.x * 2.0f;
         const float spacingY = half.y * 2.0f;
+        const float spacingZ = half.z * 2.0f;
 
         const float baseX = -0.5f * (wallW - 1) * spacingX;
         const float baseY = physicsWorld.floorY + half.y;
-        const float z = 0.0f;
+        const float baseZ = -0.5f * (wallD - 1) * spacingZ;
 
-        for (int y = 0; y < wallH; ++y) {
-            for (int x = 0; x < wallW; ++x) {
-                RigidBody b;
-                b.position = {baseX + x * spacingX, baseY + y * spacingY, z};
-                b.velocity = {0.0f, 0.0f, 0.0f};
-                b.angularVelocity = {0.0f, 0.0f, 0.0f};
-                b.orientation = Quat::identity();
-                const float volume = (half.x * 2.0f) * (half.y * 2.0f) * (half.z * 2.0f);
-                b.mass = std::max(0.05f, std::max(1.0f, wallMaterial.density) * std::max(0.0f, volume));
-                b.friction = std::clamp(wallMaterial.friction, 0.0f, 2.0f);
-                b.restitution = std::clamp(wallMaterial.restitution, 0.0f, 1.0f);
-                b.collider = Collider::createBox(half);
-                b.isStatic = false;
-                b.sleeping = true;
-                b.sleepTimer = 1.0f;
+        for (int z = 0; z < wallD; ++z) {
+            for (int y = 0; y < wallH; ++y) {
+                for (int x = 0; x < wallW; ++x) {
+                    RigidBody b;
+                    b.position = {baseX + x * spacingX, baseY + y * spacingY, baseZ + z * spacingZ};
+                    b.velocity = {0.0f, 0.0f, 0.0f};
+                    b.angularVelocity = {0.0f, 0.0f, 0.0f};
+                    b.orientation = Quat::identity();
+                    const float volume = (half.x * 2.0f) * (half.y * 2.0f) * (half.z * 2.0f);
+                    b.mass = std::max(0.05f, std::max(1.0f, wallMaterial.density) * std::max(0.0f, volume));
+                    b.friction = std::clamp(wallMaterial.friction, 0.0f, 2.0f);
+                    b.restitution = std::clamp(wallMaterial.restitution, 0.0f, 1.0f);
+                    b.collider = Collider::createBox(half);
+                    b.isStatic = false;
+                    b.sleeping = true;
+                    b.sleepTimer = 1.0f;
 
-                dynamicBodies.push_back(b);
-                physicsWorld.addRigidBody(&dynamicBodies.back());
-                {
-                    const RigidBody* rb = &dynamicBodies.back();
-                    Renderer::RenderStyle st;
-                    st.color = applyOpacity(wallMaterial.color, wallMaterial.opacity);
-                    st.outline = wallMaterial.outline;
-                    bodyStyles[rb] = st;
+                    dynamicBodies.push_back(b);
+                    physicsWorld.addRigidBody(&dynamicBodies.back());
+                    {
+                        const RigidBody* rb = &dynamicBodies.back();
+                        Renderer::RenderStyle st;
+                        st.color = applyOpacity(wallMaterial.color, wallMaterial.opacity);
+                        st.outline = wallMaterial.outline;
+                        bodyStyles[rb] = st;
+                    }
                 }
             }
         }

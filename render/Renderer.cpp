@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <raylib.h>
+#include <raymath.h>
 #include <rlgl.h>
 #include <cmath>
 
@@ -13,10 +14,20 @@ bool Renderer::init(int width, int height, const char* title) {
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(width, height, title);
     SetTargetFPS(60);
+
+    if (!meshesInitialized) {
+        cubeMesh = GenMeshCube(1.0f, 1.0f, 1.0f);
+        sphereMesh = GenMeshSphere(1.0f, 16, 16);
+        meshesInitialized = true;
+    }
+
     return IsWindowReady();
 }
 
 void Renderer::beginFrame() {
+    for (auto& kv : cubeInstances) kv.second.clear();
+    for (auto& kv : sphereInstances) kv.second.clear();
+
     BeginDrawing();
     ClearBackground(RAYWHITE);
 
@@ -48,6 +59,27 @@ void Renderer::beginFrame() {
 
 void Renderer::end3D() {
     if (!in3D) return;
+
+    if (!cubeInstances.empty()) {
+        Material mat = LoadMaterialDefault();
+        for (const auto& kv : cubeInstances) {
+            unsigned int cInt = kv.first;
+            Color c = { (unsigned char)(cInt >> 24), (unsigned char)((cInt >> 16) & 0xFF), (unsigned char)((cInt >> 8) & 0xFF), (unsigned char)(cInt & 0xFF) };
+            mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
+            DrawMeshInstanced(cubeMesh, mat, kv.second.data(), (int)kv.second.size());
+        }
+    }
+
+    if (!sphereInstances.empty()) {
+        Material mat = LoadMaterialDefault();
+        for (const auto& kv : sphereInstances) {
+            unsigned int cInt = kv.first;
+            Color c = { (unsigned char)(cInt >> 24), (unsigned char)((cInt >> 16) & 0xFF), (unsigned char)((cInt >> 8) & 0xFF), (unsigned char)(cInt & 0xFF) };
+            mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
+            DrawMeshInstanced(sphereMesh, mat, kv.second.data(), (int)kv.second.size());
+        }
+    }
+
     EndMode3D();
     in3D = false;
 }
@@ -173,19 +205,43 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
         switch (c.type) {
             case ColliderType::Sphere: {
                 float radius = c.sphere.radius;
-                DrawSphere(Vector3{0.0f, 0.0f, 0.0f}, radius, color);
-                if (outline) {
-                    DrawSphereWires(Vector3{0.0f, 0.0f, 0.0f}, radius, 24, 24, BLACK);
+                if (outline || isTransparent) {
+                    DrawSphere(Vector3{0.0f, 0.0f, 0.0f}, radius, color);
+                    if (outline) DrawSphereWires(Vector3{0.0f, 0.0f, 0.0f}, radius, 24, 24, BLACK);
+                } else {
+                    Matrix mat = MatrixIdentity();
+                    mat = MatrixMultiply(MatrixScale(radius, radius, radius), mat);
+
+                    Matrix curMat;
+                    curMat = rlGetMatrixModelview();
+
+                    mat = MatrixMultiply(mat, curMat);
+                    
+                    unsigned int cInt = (color.r << 24) | (color.g << 16) | (color.b << 8) | color.a;
+                    sphereInstances[cInt].push_back(mat);
                 }
                 break;
             }
             case ColliderType::Box: {
                 Vec3 half = c.box.halfExtents;
                 Vector3 boxSize = {half.x * 2.0f, half.y * 2.0f, half.z * 2.0f};
-                DrawCubeV(Vector3{0.0f, 0.0f, 0.0f}, boxSize, color);
-                if (outline) {
-                    Vector3 outlineSize = {boxSize.x, boxSize.y, boxSize.z};
-                    DrawCubeWiresV(Vector3{0.0f, 0.0f, 0.0f}, outlineSize, BLACK);
+                
+                if (outline || isTransparent) {
+                    DrawCubeV(Vector3{0.0f, 0.0f, 0.0f}, boxSize, color);
+                    if (outline) {
+                        Vector3 outlineSize = {boxSize.x, boxSize.y, boxSize.z};
+                        DrawCubeWiresV(Vector3{0.0f, 0.0f, 0.0f}, outlineSize, BLACK);
+                    }
+                } else {
+                    Matrix mat = MatrixIdentity();
+                    mat = MatrixMultiply(MatrixScale(boxSize.x, boxSize.y, boxSize.z), mat);
+                    Matrix curMat;
+                    curMat = rlGetMatrixModelview();
+
+                    mat = MatrixMultiply(mat, curMat);
+
+                    unsigned int cInt = (color.r << 24) | (color.g << 16) | (color.b << 8) | color.a;
+                    cubeInstances[cInt].push_back(mat);
                 }
                 break;
             }

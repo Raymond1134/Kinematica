@@ -1744,7 +1744,7 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
         invMassA *= invScaleA;
         invMassB *= invScaleB;
         float totalInvMass = invMassA + invMassB;
-        if (totalInvMass < 1e-8f) continue;
+        if (totalInvMass < 1e-20f) continue;
 
         auto invInertiaWorldMulScaled = [&](const RigidBody* body, const Vec3& v, float invScale) -> Vec3 {
             if (!body) return {0.0f, 0.0f, 0.0f};
@@ -1787,7 +1787,7 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
                     denomN += invMassB + Vec3::dot(normal, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxN, invScaleB), rB));
                 }
 
-                if (denomN > 1e-6f) {
+                if (denomN > 1e-20f) {
                     float bias = 0.0f;
                     if (cp.penetration > slop) {
                         bias = baumgarteFactor * (cp.penetration - slop);
@@ -1828,7 +1828,7 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
                         Vec3 rBxT = Vec3::cross(rB, t1);
                         denomT += invMassB + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxT, invScaleB), rB));
                     }
-                    if (denomT > 1e-6f) {
+                    if (denomT > 1e-20f) {
                         float vt = Vec3::dot(relV, t1);
                         newT1 = oldT1 + (-vt / denomT);
                     }
@@ -1840,7 +1840,7 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
                         Vec3 rBxT = Vec3::cross(rB, t2);
                         denomT += invMassB + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxT, invScaleB), rB));
                     }
-                    if (denomT > 1e-6f) {
+                    if (denomT > 1e-20f) {
                         float vt = Vec3::dot(relV, t2);
                         newT2 = oldT2 + (-vt / denomT);
                     }
@@ -1958,7 +1958,7 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
             invMassA *= invScaleA;
             invMassB *= invScaleB;
             float totalInvMass = invMassA + invMassB;
-            if (totalInvMass < 1e-8f) continue;
+            if (totalInvMass < 1e-20f) continue;
             float vASq = bodyA->velocity.lengthSq();
             float wASq = bodyA->angularVelocity.lengthSq();
             if (vASq > restingMaxBodySpeed * restingMaxBodySpeed) continue;
@@ -1984,7 +1984,7 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
 
             float invCount = 1.0f / (float)m.count;
             float supportImpulse = 0.0f;
-            if (totalInvMass > 1e-6f) { supportImpulse = (fabsf(gravity.y) * currentDt / totalInvMass) * invCount;}
+            if (totalInvMass > 1e-20f) { supportImpulse = (fabsf(gravity.y) * currentDt / totalInvMass) * invCount;}
 
             Vec3 t1, t2;
             PhysicsWorld::buildFrictionBasis(normal, t1, t2);
@@ -2016,7 +2016,7 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
                         Vec3 rBxT = Vec3::cross(rB, t1);
                         denomT += invMassB + Vec3::dot(t1, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxT, invScaleB), rB));
                     }
-                    if (denomT > 1e-6f) {
+                    if (denomT > 1e-20f) {
                         float vt = Vec3::dot(relV, t1);
                         newT1 = oldT1 + (-vt / denomT);
                     }
@@ -2029,7 +2029,7 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
                         Vec3 rBxT = Vec3::cross(rB, t2);
                         denomT += invMassB + Vec3::dot(t2, Vec3::cross(invInertiaWorldMulScaled(bodyB, rBxT, invScaleB), rB));
                     }
-                    if (denomT > 1e-6f) {
+                    if (denomT > 1e-20f) {
                         float vt = Vec3::dot(relV, t2);
                         newT2 = oldT2 + (-vt / denomT);
                     }
@@ -2065,7 +2065,7 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
                 if (fabsf(wRelN) > 1e-6f) {
                     float denomTw = Vec3::dot(normal, invInertiaWorldMulScaled(bodyA, normal, invScaleA));
                     if (bodyB) denomTw += Vec3::dot(normal, invInertiaWorldMulScaled(bodyB, normal, invScaleB));
-                    if (denomTw > 1e-6f) {
+                    if (denomTw > 1e-20f) {
                         float dW = (-wRelN / denomTw);
                         float oldW = cp.twistImpulse;
                         float newW = oldW + dW;
