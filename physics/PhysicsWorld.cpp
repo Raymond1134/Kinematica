@@ -780,38 +780,50 @@ void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const Rigid
 
     struct Cluster {
         Vec3 nLocal;
-        Vec3 a, b, c;
+        Vec3 a0, b0, c0;
+        Vec3 a1, b1, c1;
+        bool hasSecond = false;
         float pen = 0.0f;
+        float support = 0.0f;
     };
     std::vector<Cluster> clusters;
     clusters.reserve(8);
 
-    auto tryAddCluster = [&](const Vec3& nLocalIn, const Vec3& a, const Vec3& b, const Vec3& c, float pen) {
+    auto tryAddCluster = [&](const Vec3& nLocalIn, const Vec3& a, const Vec3& b, const Vec3& c, float pen, float support) {
         constexpr float sameNormalCos = 0.98f;
         for (Cluster& cl : clusters) {
             if (Vec3::dot(cl.nLocal, nLocalIn) >= sameNormalCos) {
+                if (!cl.hasSecond) {
+                    cl.a1 = a; cl.b1 = b; cl.c1 = c;
+                    cl.hasSecond = true;
+                }
                 if (pen > cl.pen) {
                     cl.pen = pen;
-                    cl.a = a; cl.b = b; cl.c = c;
+                    cl.a0 = a; cl.b0 = b; cl.c0 = c;
                 }
+                if (support > cl.support) cl.support = support;
                 return;
             }
         }
         if ((int)clusters.size() < 8) {
             Cluster cl;
             cl.nLocal = nLocalIn;
-            cl.a = a; cl.b = b; cl.c = c;
+            cl.a0 = a; cl.b0 = b; cl.c0 = c;
             cl.pen = pen;
+            cl.support = support;
             clusters.push_back(cl);
         } else {
             int worst = 0;
             for (int i = 1; i < (int)clusters.size(); ++i) {
-                if (clusters[i].pen < clusters[worst].pen) worst = i;
+                if (clusters[i].support < clusters[worst].support) worst = i;
+                else if (clusters[i].support == clusters[worst].support && clusters[i].pen < clusters[worst].pen) worst = i;
             }
-            if (pen > clusters[worst].pen) {
+            if (support > clusters[worst].support || (support == clusters[worst].support && pen > clusters[worst].pen)) {
                 clusters[worst].nLocal = nLocalIn;
-                clusters[worst].a = a; clusters[worst].b = b; clusters[worst].c = c;
+                clusters[worst].a0 = a; clusters[worst].b0 = b; clusters[worst].c0 = c;
+                clusters[worst].hasSecond = false;
                 clusters[worst].pen = pen;
+                clusters[worst].support = support;
             }
         }
     };
@@ -833,24 +845,44 @@ void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const Rigid
         }
 
         Vec3 nLocal = n / sqrtf(nLenSq);
-        Vec3 triCent = (a + b + c) * (1.0f / 3.0f);
-        if (Vec3::dot(nLocal, boxCenterM - triCent) < 0.0f) nLocal = -nLocal;
 
         float rOnN =
             he.x * fabsf(Vec3::dot(nLocal, boxAxesM[0])) +
             he.y * fabsf(Vec3::dot(nLocal, boxAxesM[1])) +
             he.z * fabsf(Vec3::dot(nLocal, boxAxesM[2]));
 
+        Vec3 triCent = (a + b + c) * (1.0f / 3.0f);
+        if (Vec3::dot(nLocal, boxCenterM - triCent) < 0.0f) nLocal = -nLocal;
+
         float distCenter = Vec3::dot(boxCenterM - a, nLocal);
         if (distCenter >= rOnN) continue;
         float pen = (rOnN - distCenter);
         if (pen < 1e-5f) pen = 1e-5f;
 
-        tryAddCluster(nLocal, a, b, c, pen);
+        Vec3 nWorld = meshBody->orientation.rotate(nLocal);
+        float support = std::max(0.0f, nWorld.y);
+        tryAddCluster(nLocal, a, b, c, pen, support);
     }
 
     if (clusters.empty()) return;
-    std::sort(clusters.begin(), clusters.end(), [](const Cluster& x, const Cluster& y) { return x.pen > y.pen; });
+
+    bool hasSupport = false;
+    for (const Cluster& cl : clusters) {
+        if (cl.support >= 0.05f) { hasSupport = true; break; }
+    }
+    if (hasSupport) {
+        int w = 0;
+        for (int i = 0; i < (int)clusters.size(); ++i) {
+            if (clusters[i].support >= 0.05f) clusters[w++] = clusters[i];
+        }
+        clusters.resize(w);
+        if (clusters.empty()) return;
+    }
+
+    std::sort(clusters.begin(), clusters.end(), [](const Cluster& x, const Cluster& y) {
+        if (x.support != y.support) return x.support > y.support;
+        return x.pen > y.pen;
+    });
 
     const int emitCount = std::min(maxManifolds, (int)clusters.size());
     for (int ci = 0; ci < emitCount; ++ci) {
@@ -891,7 +923,7 @@ void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const Rigid
         };
 
         for (int vi = 0; vi < 8; ++vi) {
-            float dist = Vec3::dot(vertsM[vi] - cl.a, nLocal);
+            float dist = Vec3::dot(vertsM[vi] - cl.a0, nLocal);
             insertIfBetter(dist, vi);
         }
 
@@ -904,9 +936,16 @@ void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const Rigid
 
             Vec3 vM = vertsM[vi];
             Vec3 pPlane = vM - nLocal * dist;
-            Vec3 triPtM = pointInTri(pPlane, cl.a, cl.b, cl.c) ? pPlane : closestPtPointTriangle(pPlane, cl.a, cl.b, cl.c);
+            Vec3 triPtM0 = pointInTri(pPlane, cl.a0, cl.b0, cl.c0) ? pPlane : closestPtPointTriangle(pPlane, cl.a0, cl.b0, cl.c0);
+            Vec3 bestTriPtM = triPtM0;
+            float bestD2 = (triPtM0 - pPlane).lengthSq();
+            if (cl.hasSecond) {
+                Vec3 triPtM1 = pointInTri(pPlane, cl.a1, cl.b1, cl.c1) ? pPlane : closestPtPointTriangle(pPlane, cl.a1, cl.b1, cl.c1);
+                float d2 = (triPtM1 - pPlane).lengthSq();
+                if (d2 < bestD2) { bestD2 = d2; bestTriPtM = triPtM1; }
+            }
 
-            Vec3 pTriWorld = meshBody->orientation.rotate(triPtM) + meshBody->position;
+            Vec3 pTriWorld = meshBody->orientation.rotate(bestTriPtM) + meshBody->position;
             Vec3 pBoxWorld = vertsW[vi];
             Vec3 p = (pTriWorld + pBoxWorld) * 0.5f;
 
@@ -1718,11 +1757,7 @@ void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPos
             relV = vB - vA;
 
             Vec3 t1, t2;
-            if (ci == 0) {
-                PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
-            } else {
-                PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
-            }
+            PhysicsWorld::buildFrictionBasis(m.normal, t1, t2);
 
             float oldT1 = Vec3::dot(cp.tangentImpulse, t1);
             float oldT2 = Vec3::dot(cp.tangentImpulse, t2);
@@ -2351,27 +2386,25 @@ void PhysicsWorld::appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::v
             }
             ++emitted;
         } else if (otherBody->collider.type == ColliderType::Box) {
-            std::vector<ContactManifold> tmp;
-            tmp.reserve(4);
-            appendMeshBoxManifolds(meshBody, otherBody, tmp, maxManifolds - emitted);
-            if (tmp.empty()) return;
+            ContactManifold m;
+            hit = collideMeshBox(meshBody, otherBody, m);
+            if (!hit) return;
 
-            for (ContactManifold& m : tmp) {
-                if (otherIsB) {
-                    m.a = a;
-                    m.b = b;
-                    orientNormalForPair(m, m.a, m.b);
-                    out.push_back(m);
-                } else {
-                    std::swap(m.a, m.b);
-                    m.normal = -m.normal;
-                    m.a = a;
-                    m.b = b;
-                    orientNormalForPair(m, m.a, m.b);
-                    out.push_back(m);
-                }
-                if (++emitted >= maxManifolds) break;
+            if (otherIsB) {
+                m.a = a;
+                m.b = b;
+                orientNormalForPair(m, m.a, m.b);
+                out.push_back(m);
+            } else {
+                std::swap(m.a, m.b);
+                m.normal = -m.normal;
+                m.a = a;
+                m.b = b;
+                orientNormalForPair(m, m.a, m.b);
+                out.push_back(m);
             }
+
+            ++emitted;
             return;
         } else if (otherBody->collider.type == ColliderType::Convex) {
             std::vector<ContactManifold> tmp;
@@ -2770,19 +2803,19 @@ bool PhysicsWorld::collideMeshBox(const RigidBody* meshBody, const RigidBody* bo
         return best;
     };
 
-    const float distTolSq = 1e-6f;
+    const float distTolSq = 1e-4f;
 
-    float bestPen = 0.0f;
-    Vec3 bestNLocal = {0.0f, 1.0f, 0.0f};
-    Vec3 bestTriPt = {0.0f, 0.0f, 0.0f};
-    float bestBoxR = 0.0f;
-    bool hit = false;
-    uint32_t bestTriId = 0;
-    Vec3 bestTriA{0.0f, 0.0f, 0.0f};
-    Vec3 bestTriB{0.0f, 0.0f, 0.0f};
-    Vec3 bestTriC{0.0f, 0.0f, 0.0f};
-    Vec3 bestClosestTri{0.0f, 0.0f, 0.0f};
-    Vec3 bestClosestBox{0.0f, 0.0f, 0.0f};
+    struct TriCandidate {
+        uint32_t tid;
+        Vec3 a, b, c;
+        Vec3 nLocal;
+        float pen;
+        float support;
+        Vec3 closestTri;
+        Vec3 closestBox;
+    };
+    std::vector<TriCandidate> candidates;
+    candidates.reserve(32);
 
     for (uint32_t tid : triIds) {
         if (tid >= mesh.tris.size()) continue;
@@ -2794,43 +2827,112 @@ bool PhysicsWorld::collideMeshBox(const RigidBody* meshBody, const RigidBody* bo
         Vec3 n = Vec3::cross(b - a, c - a);
         float nLenSq = n.lengthSq();
         if (nLenSq < 1e-12f) continue;
+        
         Vec3 nLocal = n / sqrtf(nLenSq);
-        Vec3 triCent = (a + b + c) * (1.0f / 3.0f);
-        if (Vec3::dot(nLocal, boxCenterM - triCent) < 0.0f) nLocal = -nLocal;
+        float distCenter = Vec3::dot(boxCenterM - a, nLocal);
+
+        if (distCenter < 0.0f) {
+            Vec3 pPlane = boxCenterM - nLocal * distCenter;
+            
+            if (!pointInTri(pPlane, a, b, c)) { continue; }
+        }
+
         float rOnN =
             he.x * fabsf(Vec3::dot(nLocal, boxAxesM[0])) +
             he.y * fabsf(Vec3::dot(nLocal, boxAxesM[1])) +
             he.z * fabsf(Vec3::dot(nLocal, boxAxesM[2]));
 
-        float distCenter = Vec3::dot(boxCenterM - a, nLocal);
         if (distCenter >= rOnN) continue;
 
         float pen = (rOnN - distCenter);
         if (pen < 1e-5f) pen = 1e-5f;
 
-        Vec3 pPlane = boxCenterM - nLocal * distCenter;
-        Vec3 triPt = pointInTri(pPlane, a, b, c) ? pPlane : closestPtPointTriangle(pPlane, a, b, c);
         Vec3 closestTri, closestBox;
-
         float closestD2 = triObbClosest(a, b, c, closestTri, closestBox);
         if (closestD2 > distTolSq) continue;
 
-        if (!hit || pen > bestPen) {
-            hit = true;
-            bestPen = pen;
-            bestNLocal = nLocal;
-            bestTriPt = triPt;
-            bestBoxR = rOnN;
-            bestTriId = tid;
-            bestTriA = a;
-            bestTriB = b;
-            bestTriC = c;
-            bestClosestTri = closestTri;
-            bestClosestBox = closestBox;
+        Vec3 nWorld = meshBody->orientation.rotate(nLocal);
+        float support = std::max(0.0f, nWorld.y);
+
+        TriCandidate cand;
+        cand.tid = tid;
+        cand.a = a; cand.b = b; cand.c = c;
+        cand.nLocal = nLocal;
+        cand.pen = pen;
+        cand.support = support;
+        cand.closestTri = closestTri;
+        cand.closestBox = closestBox;
+        candidates.push_back(cand);
+    }
+
+    if (candidates.empty()) return false;
+
+    const TriCandidate* best = nullptr;
+    for (const TriCandidate& c : candidates) {
+        if (!best || c.pen > best->pen) {
+            best = &c;
         }
     }
 
-    if (!hit) return false;
+    if (!best) return false;
+
+    const float minSupport = 0.05f;
+    const float upwardPenTolerance = 0.001f;
+    const float coplanarAngleCos = 0.9999f;
+    const float coplanarSupportDiff = 0.1f;
+
+    const TriCandidate* bestUpward = nullptr;
+    for (const TriCandidate& c : candidates) {
+        if (c.support >= minSupport) {
+            if (!bestUpward) {
+                bestUpward = &c;
+            } else {
+                float penDiff = c.pen - bestUpward->pen;
+                if (penDiff > upwardPenTolerance || (std::fabs(penDiff) <= upwardPenTolerance && c.support > bestUpward->support)) {
+                    bestUpward = &c;
+                }
+            }
+        }
+    }
+
+    if (bestUpward) {
+        float upwardScore = bestUpward->pen + bestUpward->support * 0.01f;
+        float bestScore = best->pen + best->support * 0.01f;
+        if (upwardScore >= bestScore - 0.001f) {
+            best = bestUpward;
+        }
+    }
+
+    Vec3 bestNLocal = best->nLocal;
+    if (best->support >= minSupport) {
+        Vec3 normalSum = bestNLocal;
+        int normalCount = 1;
+        
+        for (const TriCandidate& c : candidates) {
+            if (&c == best) continue;
+            if (c.support < minSupport) continue;
+            
+            float normalDot = Vec3::dot(c.nLocal, bestNLocal);
+            float supportDiff = std::fabs(c.support - best->support);
+            if (normalDot >= coplanarAngleCos && supportDiff < coplanarSupportDiff && std::fabs(c.pen - best->pen) < upwardPenTolerance) {
+                normalSum = normalSum + c.nLocal;
+                normalCount++;
+            }
+        }
+        
+        if (normalCount > 1) {
+            bestNLocal = normalSum / (float)normalCount;
+            float len = bestNLocal.length();
+            if (len > 1e-6f) {
+                bestNLocal = bestNLocal / len;
+            }
+        }
+    }
+    Vec3 bestTriA = best->a;
+    Vec3 bestTriB = best->b;
+    Vec3 bestTriC = best->c;
+    Vec3 bestClosestTri = best->closestTri;
+    Vec3 bestClosestBox = best->closestBox;
 
     Vec3 vertsW[8];
     Vec3 vertsM[8];
@@ -2915,9 +3017,8 @@ bool PhysicsWorld::collideMeshBox(const RigidBody* meshBody, const RigidBody* bo
         Vec3 p = (pTriWorld + pBoxWorld) * 0.5f;
         m.count = 1;
         m.points[0].pointWorld = p;
-        m.points[0].penetration = bestPen;
+        m.points[0].penetration = best->pen;
         m.points[0].targetNormalVelocity = 0.0f;
     }
-    (void)bestTriId;
     return true;
 }

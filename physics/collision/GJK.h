@@ -31,7 +31,7 @@ inline GJKResult gjk(const RigidBody& A, const RigidBody& B) {
 
         v = supportPoint(A, B, direction);
 
-        if (Vec3::dot(v.p, direction) < 0.0f) {
+        if (Vec3::dot(v.p, direction) < 1e-6f) {
             result.hit = false;
             return result;
         }
@@ -49,7 +49,7 @@ inline GJKResult gjk(const RigidBody& A, const RigidBody& B) {
         }
     }
 
-    result.hit = true;
+    result.hit = false;
     result.simplex = simplex;
     return result;
 }

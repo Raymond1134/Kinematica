@@ -1,6 +1,9 @@
 {
-  "name": "Aerogel (Silica)",
+  "name": "Aerogel",
   "density": 3,
   "friction": 0.25,
-  "restitution": 0.02
+  "restitution": 0.1,
+  "color": [220, 230, 255],
+  "opacity": 0.75,
+  "outline": false
 }

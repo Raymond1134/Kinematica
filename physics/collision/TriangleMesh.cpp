@@ -143,8 +143,9 @@ void TriangleMesh::queryAabb(const Vec3& qMin, const Vec3& qMax, std::vector<uin
     q.min = qMin;
     q.max = qMax;
 
-    std::vector<int> stack;
-    stack.reserve(64);
+    thread_local std::vector<int> stack;
+    stack.clear();
+    if (stack.capacity() < 64) stack.reserve(64);
     stack.push_back(0);
 
     while (!stack.empty() && outTriIds.size() < maxOut) {

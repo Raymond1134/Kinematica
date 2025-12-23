@@ -2,5 +2,8 @@
   "name": "Sticky Putty",
   "density": 1200,
   "friction": 1.30,
-  "restitution": 0.00
+  "restitution": 0.00,
+  "color": [60, 60, 210],
+  "opacity": 1.0,
+  "outline": false
 }

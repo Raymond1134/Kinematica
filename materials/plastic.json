@@ -1,6 +1,9 @@
 {
-  "name": "Plastic (HDPE)",
+  "name": "Plastic",
   "density": 950,
   "friction": 0.20,
-  "restitution": 0.15
+  "restitution": 0.4,
+  "color": [240, 240, 240],
+  "opacity": 1.0,
+  "outline": true
 }

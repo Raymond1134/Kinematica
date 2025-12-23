@@ -47,7 +47,7 @@ struct Vec3 {
         };
     }
 
-    Vec3 normalized(float eps = 1e-3f) const {
+    Vec3 normalized(float eps = 1e-8f) const {
         float lsq = lengthSq();
         if (lsq <= eps * eps) return {0.0f, 0.0f, 0.0f};
         float inv = 1.0f / std::sqrt(lsq);

@@ -10,7 +10,7 @@
 #include <limits>
 
 
-inline bool nearlyEqualVec3(const Vec3& a, const Vec3& b, float epsSq = 1e-12f) {
+inline bool nearlyEqualVec3(const Vec3& a, const Vec3& b, float epsSq = 1e-10f) {
     Vec3 d = a - b;
     return d.lengthSq() <= epsSq;
 }

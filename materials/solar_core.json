@@ -2,5 +2,8 @@
   "name": "Solar Core",
   "density": 150000,
   "friction": 0.01,
-  "restitution": 0.00
+  "restitution": 0.00,
+  "color": [255, 255, 200],
+  "opacity": 1.0,
+  "outline": true
 }

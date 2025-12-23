@@ -1,6 +1,9 @@
 {
-  "name": "Wood (Pine)",
-  "density": 500,
-  "friction": 0.45,
-  "restitution": 0.10
+  "name": "Wood",
+  "density": 350,
+  "friction": 0.3,
+  "restitution": 0.10,
+  "color": [165, 106, 58],
+  "opacity": 1.0,
+  "outline": true
 }

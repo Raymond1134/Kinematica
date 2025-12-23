@@ -1,6 +1,9 @@
 {
   "name": "Rubber",
-  "density": 1100,
+  "density": 920,
   "friction": 1.10,
-  "restitution": 0.70
+  "restitution": 0.85,
+  "color": [30, 30, 30],
+  "opacity": 1.0,
+  "outline": true
 }

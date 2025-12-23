@@ -3,6 +3,8 @@
 #include "../math/Vec3.h"
 #include "../math/Quat.h"
 #include <vector>
+#include <unordered_map>
+#include <cstdint>
 #include <raylib.h>
 #include <rlgl.h>
 #include <cmath>
@@ -55,11 +57,100 @@ void Renderer::setUiBlockRect(Rectangle r) {
     hasUiBlockRect = (r.width > 0.0f && r.height > 0.0f);
 }
 
-void Renderer::drawRigidBody(const RigidBody* body, float size) {
+static uint64_t edgeKey(uint32_t a, uint32_t b) {
+    uint32_t lo = (a < b) ? a : b;
+    uint32_t hi = (a < b) ? b : a;
+    return (uint64_t(lo) << 32) | uint64_t(hi);
+}
+
+const std::vector<Renderer::Edge>& Renderer::getMeshBoundaryEdges(const TriangleMesh& mesh) const {
+    for (const MeshEdgeCache& c : meshEdgeCaches) {
+        if (c.mesh == &mesh) return c.boundaryEdges;
+    }
+
+    MeshEdgeCache cache;
+    cache.mesh = &mesh;
+    cache.boundaryEdges.clear();
+
+    struct EdgeAccum {
+        int count = 0;
+        Vec3 n0 = {0.0f, 0.0f, 0.0f};
+        Vec3 n1 = {0.0f, 0.0f, 0.0f};
+        bool has0 = false;
+        bool has1 = false;
+    };
+
+    std::unordered_map<uint64_t, EdgeAccum> acc;
+    acc.reserve(mesh.tris.size() * 3);
+
+    auto addEdge = [&](uint32_t a, uint32_t b, const Vec3& triNormal) {
+        EdgeAccum& e = acc[edgeKey(a, b)];
+        e.count++;
+        if (!e.has0) {
+            e.n0 = triNormal;
+            e.has0 = true;
+        } else if (!e.has1) {
+            e.n1 = triNormal;
+            e.has1 = true;
+        }
+    };
+
+    for (const auto& t : mesh.tris) {
+        if (t.a >= mesh.vertices.size() || t.b >= mesh.vertices.size() || t.c >= mesh.vertices.size()) continue;
+        const Vec3& a = mesh.vertices[t.a];
+        const Vec3& b = mesh.vertices[t.b];
+        const Vec3& c = mesh.vertices[t.c];
+        Vec3 n = Vec3::cross(b - a, c - a).normalized();
+        if (n.lengthSq() <= 1e-12f) continue;
+
+        addEdge(t.a, t.b, n);
+        addEdge(t.b, t.c, n);
+        addEdge(t.c, t.a, n);
+    }
+
+
+    constexpr float kCosFeatureAngle = 0.985f;
+
+    cache.boundaryEdges.reserve(acc.size());
+    for (const auto& kv : acc) {
+        const EdgeAccum& e = kv.second;
+        bool include = false;
+        if (e.count == 1) {
+            include = true;
+        } else if (e.count == 2) {
+            if (!e.has0 || !e.has1) {
+                include = true;
+            } else {
+                float d = Vec3::dot(e.n0, e.n1);
+                include = (d < kCosFeatureAngle);
+            }
+        } else {
+            include = true;
+        }
+
+        if (!include) continue;
+        uint32_t a = uint32_t(kv.first >> 32);
+        uint32_t b = uint32_t(kv.first & 0xffffffffu);
+        cache.boundaryEdges.push_back({a, b});
+    }
+
+    meshEdgeCaches.push_back(std::move(cache));
+    return meshEdgeCaches.back().boundaryEdges;
+}
+
+void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, float size) {
     if (!body) return;
 
     Vector3 pos = { body->position.x, body->position.y, body->position.z };
-    Color color = body->isStatic ? GRAY : BLUE;
+    Color color = style.color;
+    bool outline = style.outline;
+
+    const bool isTransparent = (color.a < 255);
+    if (isTransparent) {
+        rlDrawRenderBatchActive();
+        BeginBlendMode(BLEND_ALPHA);
+        rlDisableDepthMask();
+    }
     
     auto applyQuat = [&](const Quat& qq) {
         Quat nq = qq.normalized();
@@ -83,31 +174,33 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
             case ColliderType::Sphere: {
                 float radius = c.sphere.radius;
                 DrawSphere(Vector3{0.0f, 0.0f, 0.0f}, radius, color);
-                DrawSphereWires(Vector3{0.0f, 0.0f, 0.0f}, radius, 16, 16, Fade(BLACK, 0.7f));
-                DrawLine3D(Vector3{0.0f, 0.0f, 0.0f}, Vector3{radius, 0.0f, 0.0f}, Fade(RED, 0.7f));
-                DrawLine3D(Vector3{0.0f, 0.0f, 0.0f}, Vector3{0.0f, radius, 0.0f}, Fade(GREEN, 0.7f));
-                DrawLine3D(Vector3{0.0f, 0.0f, 0.0f}, Vector3{0.0f, 0.0f, radius}, Fade(BLUE, 0.7f));
+                if (outline) {
+                    DrawSphereWires(Vector3{0.0f, 0.0f, 0.0f}, radius, 24, 24, BLACK);
+                }
                 break;
             }
             case ColliderType::Box: {
                 Vec3 half = c.box.halfExtents;
                 Vector3 boxSize = {half.x * 2.0f, half.y * 2.0f, half.z * 2.0f};
                 DrawCubeV(Vector3{0.0f, 0.0f, 0.0f}, boxSize, color);
-                Vector3 outlineSize = {boxSize.x, boxSize.y, boxSize.z};
-                DrawCubeWiresV(Vector3{0.0f, 0.0f, 0.0f}, outlineSize, BLACK);
+                if (outline) {
+                    Vector3 outlineSize = {boxSize.x, boxSize.y, boxSize.z};
+                    DrawCubeWiresV(Vector3{0.0f, 0.0f, 0.0f}, outlineSize, BLACK);
+                }
                 break;
             }
             case ColliderType::Capsule: {
                 float radius = c.capsule.radius;
                 float halfHeight = c.capsule.halfHeight;
                 DrawCapsule(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 8, 8, color);
-                DrawCapsuleWires(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 16, 16, Fade(BLACK, 0.7f));
-                DrawLine3D(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, Fade(RED, 0.7f));
+                if (outline) {
+                    DrawCapsuleWires(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 24, 24, BLACK);
+                }
                 break;
             }
             case ColliderType::Convex: {
                 if (c.polyhedron) {
-                    drawConvex(*c.polyhedron, color);
+                    drawConvex(*c.polyhedron, color, outline);
                 }
                 break;
             }
@@ -115,7 +208,7 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
                 if (!c.mesh) break;
                 const TriangleMesh& mesh = c.renderMesh ? *c.renderMesh : *c.mesh;
 
-                Color fill = body->isStatic ? Color{140, 140, 140, 255} : Color{60, 120, 200, 255};
+                Color fill = color;
                 rlBegin(RL_TRIANGLES);
                 rlColor4ub(fill.r, fill.g, fill.b, fill.a);
                 for (const auto& t : mesh.tris) {
@@ -132,17 +225,19 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
                 }
                 rlEnd();
 
-                rlBegin(RL_LINES);
-                rlColor4ub(20, 20, 20, 220);
-                for (const auto& t : mesh.tris) {
-                    const Vec3& a = mesh.vertices[t.a];
-                    const Vec3& b = mesh.vertices[t.b];
-                    const Vec3& c0 = mesh.vertices[t.c];
-                    rlVertex3f(a.x, a.y, a.z); rlVertex3f(b.x, b.y, b.z);
-                    rlVertex3f(b.x, b.y, b.z); rlVertex3f(c0.x, c0.y, c0.z);
-                    rlVertex3f(c0.x, c0.y, c0.z); rlVertex3f(a.x, a.y, a.z);
+                if (outline) {
+                    const auto& edges = getMeshBoundaryEdges(mesh);
+                    rlBegin(RL_LINES);
+                    rlColor4ub(0, 0, 0, 255);
+                    for (const auto& e : edges) {
+                        if (e.a >= mesh.vertices.size() || e.b >= mesh.vertices.size()) continue;
+                        const Vec3& a = mesh.vertices[e.a];
+                        const Vec3& b = mesh.vertices[e.b];
+                        rlVertex3f(a.x, a.y, a.z);
+                        rlVertex3f(b.x, b.y, b.z);
+                    }
+                    rlEnd();
                 }
-                rlEnd();
 
                 break;
             }
@@ -174,13 +269,18 @@ void Renderer::drawRigidBody(const RigidBody* body, float size) {
     }
 
     rlPopMatrix();
+
+    if (isTransparent) {
+        rlDrawRenderBatchActive();
+        rlEnableDepthMask();
+        EndBlendMode();
+    }
 }
 
-void Renderer::drawConvex(const PolyhedronShape& poly, Color color) const {
+void Renderer::drawConvex(const PolyhedronShape& poly, Color color, bool outline) const {
     if (poly.verts.size() < 4) return;
 
     Color fillColor = color;
-    Color edgeColor = BLACK;
 
     rlPushMatrix();
 
@@ -199,15 +299,17 @@ void Renderer::drawConvex(const PolyhedronShape& poly, Color color) const {
     }
     rlEnd();
 
-    rlBegin(RL_LINES);
-    rlColor4ub(edgeColor.r, edgeColor.g, edgeColor.b, edgeColor.a);
-    for (const auto& e : poly.edges) {
-        const Vec3& a = poly.verts[e.a];
-        const Vec3& b = poly.verts[e.b];
-        rlVertex3f(a.x, a.y, a.z);
-        rlVertex3f(b.x, b.y, b.z);
+    if (outline) {
+        rlBegin(RL_LINES);
+        rlColor4ub(0, 0, 0, 255);
+        for (const auto& e : poly.edges) {
+            const Vec3& a = poly.verts[e.a];
+            const Vec3& b = poly.verts[e.b];
+            rlVertex3f(a.x, a.y, a.z);
+            rlVertex3f(b.x, b.y, b.z);
+        }
+        rlEnd();
     }
-    rlEnd();
 
     rlPopMatrix();
 }

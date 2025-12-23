@@ -1,6 +1,9 @@
 {
   "name": "Titanium",
-  "density": 4506,
+  "density": 4500,
   "friction": 0.45,
-  "restitution": 0.10
+  "restitution": 0.15,
+  "color": [200, 205, 215],
+  "opacity": 1.0,
+  "outline": true
 }

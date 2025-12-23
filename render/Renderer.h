@@ -3,16 +3,23 @@
 #include "../math/Vec3.h"
 #include "../physics/shapes/PolyhedronShape.h"
 #include <vector>
+#include <cstdint>
 #include <raylib.h>
 
 struct RigidBody;
+struct TriangleMesh;
 
 class Renderer {
 public:
+    struct RenderStyle {
+        Color color = BLUE;
+        bool outline = false;
+    };
+
     bool init(int width, int height, const char* title);
     void beginFrame();
-    void drawRigidBody(const RigidBody* body, float size = 0.5f);
-    void drawConvex(const PolyhedronShape& poly, Color color) const;
+    void drawRigidBody(const RigidBody* body, const RenderStyle& style, float size = 0.5f);
+    void drawConvex(const PolyhedronShape& poly, Color color, bool outline) const;
     void end3D();
     void setUiBlockRect(Rectangle r);
     void endFrame();
@@ -30,4 +37,15 @@ private:
 
     bool hasUiBlockRect = false;
     Rectangle uiBlockRect = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    struct Edge {
+        uint32_t a = 0;
+        uint32_t b = 0;
+    };
+    struct MeshEdgeCache {
+        const TriangleMesh* mesh = nullptr;
+        std::vector<Edge> boundaryEdges;
+    };
+    mutable std::vector<MeshEdgeCache> meshEdgeCaches;
+    const std::vector<Edge>& getMeshBoundaryEdges(const TriangleMesh& mesh) const;
 };
