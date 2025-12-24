@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <raylib.h>
 #include <unordered_map>
+#include <memory>
 
 struct RigidBody;
 struct TriangleMesh;
@@ -15,6 +16,7 @@ public:
     struct RenderStyle {
         Color color = BLUE;
         bool outline = false;
+        std::shared_ptr<const TriangleMesh> meshOverride;
     };
 
     bool init(int width, int height, const char* title);

@@ -201,13 +201,49 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
         }
     };
 
-    auto drawColliderAtOrigin = [&](const Collider& c) {
+    auto drawTriangleMeshAtOrigin = [&](const TriangleMesh& mesh, bool allowOutline) {
+        Color fill = color;
+        rlBegin(RL_TRIANGLES);
+        rlColor4ub(fill.r, fill.g, fill.b, fill.a);
+        for (const auto& t : mesh.tris) {
+            if (t.a >= mesh.vertices.size() || t.b >= mesh.vertices.size() || t.c >= mesh.vertices.size()) continue;
+            const Vec3& a = mesh.vertices[t.a];
+            const Vec3& b = mesh.vertices[t.b];
+            const Vec3& c0 = mesh.vertices[t.c];
+            rlVertex3f(a.x, a.y, a.z);
+            rlVertex3f(b.x, b.y, b.z);
+            rlVertex3f(c0.x, c0.y, c0.z);
+
+            rlVertex3f(a.x, a.y, a.z);
+            rlVertex3f(c0.x, c0.y, c0.z);
+            rlVertex3f(b.x, b.y, b.z);
+        }
+        rlEnd();
+
+        const bool doOutline = outline && allowOutline;
+        if (doOutline) {
+            const auto& edges = getMeshBoundaryEdges(mesh);
+            rlBegin(RL_LINES);
+            rlColor4ub(0, 0, 0, 255);
+            for (const auto& e : edges) {
+                if (e.a >= mesh.vertices.size() || e.b >= mesh.vertices.size()) continue;
+                const Vec3& a = mesh.vertices[e.a];
+                const Vec3& b = mesh.vertices[e.b];
+                rlVertex3f(a.x, a.y, a.z);
+                rlVertex3f(b.x, b.y, b.z);
+            }
+            rlEnd();
+        }
+    };
+
+    auto drawColliderAtOrigin = [&](const Collider& c, bool allowOutline) {
         switch (c.type) {
             case ColliderType::Sphere: {
                 float radius = c.sphere.radius;
-                if (outline || isTransparent) {
+                const bool doOutline = outline && allowOutline;
+                if (doOutline || isTransparent) {
                     DrawSphere(Vector3{0.0f, 0.0f, 0.0f}, radius, color);
-                    if (outline) DrawSphereWires(Vector3{0.0f, 0.0f, 0.0f}, radius, 24, 24, BLACK);
+                    if (doOutline) DrawSphereWires(Vector3{0.0f, 0.0f, 0.0f}, radius, 16, 16, BLACK);
                 } else {
                     Matrix mat = MatrixIdentity();
                     mat = MatrixMultiply(MatrixScale(radius, radius, radius), mat);
@@ -225,10 +261,11 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
             case ColliderType::Box: {
                 Vec3 half = c.box.halfExtents;
                 Vector3 boxSize = {half.x * 2.0f, half.y * 2.0f, half.z * 2.0f};
+                const bool doOutline = outline && allowOutline;
                 
-                if (outline || isTransparent) {
+                if (doOutline || isTransparent) {
                     DrawCubeV(Vector3{0.0f, 0.0f, 0.0f}, boxSize, color);
-                    if (outline) {
+                    if (doOutline) {
                         Vector3 outlineSize = {boxSize.x, boxSize.y, boxSize.z};
                         DrawCubeWiresV(Vector3{0.0f, 0.0f, 0.0f}, outlineSize, BLACK);
                     }
@@ -248,9 +285,10 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
             case ColliderType::Capsule: {
                 float radius = c.capsule.radius;
                 float halfHeight = c.capsule.halfHeight;
-                DrawCapsule(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 8, 8, color);
-                if (outline) {
-                    DrawCapsuleWires(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 24, 24, BLACK);
+                const bool doOutline = outline && allowOutline;
+                DrawCapsule(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 6, 6, color);
+                if (doOutline) {
+                    DrawCapsuleWires(Vector3{0.0f, -halfHeight, 0.0f}, Vector3{0.0f, halfHeight, 0.0f}, radius, 12, 12, BLACK);
                 }
                 break;
             }
@@ -263,38 +301,7 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
             case ColliderType::Mesh: {
                 if (!c.mesh) break;
                 const TriangleMesh& mesh = c.renderMesh ? *c.renderMesh : *c.mesh;
-
-                Color fill = color;
-                rlBegin(RL_TRIANGLES);
-                rlColor4ub(fill.r, fill.g, fill.b, fill.a);
-                for (const auto& t : mesh.tris) {
-                    const Vec3& a = mesh.vertices[t.a];
-                    const Vec3& b = mesh.vertices[t.b];
-                    const Vec3& c0 = mesh.vertices[t.c];
-                    rlVertex3f(a.x, a.y, a.z);
-                    rlVertex3f(b.x, b.y, b.z);
-                    rlVertex3f(c0.x, c0.y, c0.z);
-
-                    rlVertex3f(a.x, a.y, a.z);
-                    rlVertex3f(c0.x, c0.y, c0.z);
-                    rlVertex3f(b.x, b.y, b.z);
-                }
-                rlEnd();
-
-                if (outline) {
-                    const auto& edges = getMeshBoundaryEdges(mesh);
-                    rlBegin(RL_LINES);
-                    rlColor4ub(0, 0, 0, 255);
-                    for (const auto& e : edges) {
-                        if (e.a >= mesh.vertices.size() || e.b >= mesh.vertices.size()) continue;
-                        const Vec3& a = mesh.vertices[e.a];
-                        const Vec3& b = mesh.vertices[e.b];
-                        rlVertex3f(a.x, a.y, a.z);
-                        rlVertex3f(b.x, b.y, b.z);
-                    }
-                    rlEnd();
-                }
-
+                drawTriangleMeshAtOrigin(mesh, allowOutline);
                 break;
             }
             case ColliderType::Compound:
@@ -305,22 +312,36 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
     rlPushMatrix();
     rlTranslatef(pos.x, pos.y, pos.z);
     applyQuat(body->orientation);
+
+    if (style.meshOverride) {
+        drawTriangleMeshAtOrigin(*style.meshOverride, true);
+        rlPopMatrix();
+
+        if (isTransparent) {
+            rlDrawRenderBatchActive();
+            rlEnableDepthMask();
+            EndBlendMode();
+        }
+        return;
+    }
     
     switch (body->collider.type) {
         case ColliderType::Compound: {
             if (body->collider.compound) {
+                const int childCount = (int)body->collider.compound->children.size();
+                const bool suppressChildOutline = (childCount >= 12);
                 for (const CompoundChild& child : body->collider.compound->children) {
                     rlPushMatrix();
                     rlTranslatef(child.localPosition.x, child.localPosition.y, child.localPosition.z);
                     applyQuat(child.localOrientation);
-                    drawColliderAtOrigin(child.collider);
+                    drawColliderAtOrigin(child.collider, !suppressChildOutline);
                     rlPopMatrix();
                 }
             }
             break;
         }
         default:
-            drawColliderAtOrigin(body->collider);
+            drawColliderAtOrigin(body->collider, true);
             break;
     }
 

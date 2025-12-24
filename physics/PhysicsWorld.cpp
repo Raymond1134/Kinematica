@@ -156,6 +156,24 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
     auto tContacts1 = clock::now();
     perf.buildContactsMs += std::chrono::duration<float, std::milli>(tContacts1 - tContacts0).count();
 
+    for (const ContactManifold& m : contacts) {
+        if (m.a && !m.a->isStatic) { m.a->sleeping = false; m.a->sleepTimer = 0.0f; }
+        if (m.b && !m.b->isStatic) { m.b->sleeping = false; m.b->sleepTimer = 0.0f; }
+    }
+
+    for (int iter = 0; iter < 2; ++iter) {
+        bool any = false;
+        for (auto& j : ballSocketJoints) {
+            if (!j.a || !j.b) continue;
+            if (j.a->isStatic && j.b->isStatic) continue;
+            const bool aAwake = !j.a->sleeping;
+            const bool bAwake = !j.b->sleeping;
+            if (aAwake && j.b->sleeping && !j.b->isStatic) { j.b->sleeping = false; j.b->sleepTimer = 0.0f; any = true; }
+            if (bAwake && j.a->sleeping && !j.a->isStatic) { j.a->sleeping = false; j.a->sleepTimer = 0.0f; any = true; }
+        }
+        if (!any) break;
+    }
+
     computeRestitutionTargets(contacts);
     warmStartContacts(contacts);
 
@@ -1981,7 +1999,7 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
             }
         }
         if (applyPositionCorrection && bodyB == nullptr &&
-            (bodyA->collider.type == ColliderType::Sphere || bodyA->collider.type == ColliderType::Capsule)) {
+            (bodyA->collider.type == ColliderType::Sphere || bodyA->collider.type == ColliderType::Capsule || bodyA->collider.type == ColliderType::Compound)) {
             float sumN = 0.0f;
             for (int i = 0; i < m.count; ++i) sumN += m.points[i].normalImpulse;
             if (sumN > 1e-4f) {
@@ -2503,11 +2521,12 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
 
             if (bIsMesh) {
                 std::vector<ContactManifold> temp;
-                appendMeshConvexManifolds(b, &pa, temp, 4);
+                temp.reserve(4);
+                appendBodyBodyMeshContacts(b, &pa, temp);
                 for (auto& m : temp) {
                     m.a = a;
                     m.b = b;
-                    m.normal = -m.normal;
+                    orientNormalForPair(m, m.a, m.b);
                     out.push_back(m);
                     if (++emitted >= maxManifoldsPerPair) return;
                 }
@@ -2540,10 +2559,12 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
 
         if (aIsMesh) {
             std::vector<ContactManifold> temp;
-            appendMeshConvexManifolds(a, &pb, temp, 4);
+            temp.reserve(4);
+            appendBodyBodyMeshContacts(a, &pb, temp);
             for (auto& m : temp) {
                 m.a = a;
                 m.b = b;
+                orientNormalForPair(m, m.a, m.b);
                 out.push_back(m);
                 if (++emitted >= maxManifoldsPerPair) return;
             }

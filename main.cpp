@@ -697,6 +697,7 @@ int main() {
     PhysicsWorld physicsWorld;
     std::list<RigidBody> dynamicBodies;
     std::unordered_map<const RigidBody*, Renderer::RenderStyle> bodyStyles;
+    static std::unordered_map<int, std::shared_ptr<TriangleMesh>> torusRenderCache;
 
     std::vector<MaterialProps> presetMaterials = loadMaterialsFromFolder("materials");
     MaterialProps customTemplate;
@@ -972,58 +973,44 @@ int main() {
                     case SpawnShape::Torus: {
                         float majorR = s * 1.0f;
                         float minorR = s * 0.4f;
-                        
-                        // Create a compound collider of convex hulls (cylinder segments)
                         std::vector<CompoundChild> children;
-                        int segments = 16;
-                        for (int i = 0; i < segments; ++i) {
-                            float theta1 = (float)i / (float)segments * 2.0f * 3.14159f;
-                            float theta2 = (float)(i + 1) / (float)segments * 2.0f * 3.14159f;
-                            
-                            // Generate vertices for a segment connecting ring at theta1 to ring at theta2
-                            std::vector<Vec3> verts;
-                            int ringVerts = 8;
-                            for (int j = 0; j < ringVerts; ++j) {
-                                float phi = (float)j / (float)ringVerts * 2.0f * 3.14159f;
-                                float cp = cosf(phi);
-                                float sp = sinf(phi);
-                                
-                                // Ring 1
-                                float c1 = cosf(theta1);
-                                float s1 = sinf(theta1);
-                                Vec3 p1 = {
-                                    (majorR + minorR * cp) * c1,
-                                    minorR * sp,
-                                    (majorR + minorR * cp) * s1
-                                };
-                                verts.push_back(p1);
-                                
-                                // Ring 2
-                                float c2 = cosf(theta2);
-                                float s2 = sinf(theta2);
-                                Vec3 p2 = {
-                                    (majorR + minorR * cp) * c2,
-                                    minorR * sp,
-                                    (majorR + minorR * cp) * s2
-                                };
-                                verts.push_back(p2);
-                            }
-                            
-                            // Compute centroid to center the convex hull (improves physics stability)
-                            Vec3 center = {0.0f, 0.0f, 0.0f};
-                            for (const auto& v : verts) center = center + v;
-                            center = center * (1.0f / (float)verts.size());
+                        const int segments = 16;
+                        children.reserve(segments);
 
-                            // Center vertices
-                            for (auto& v : verts) v = v - center;
+                        auto quatFromTo = [](const Vec3& from, const Vec3& to) -> Quat {
+                            Vec3 f = from.normalized();
+                            Vec3 t = to.normalized();
+                            float c = Vec3::dot(f, t);
+                            if (c >= 1.0f - 1e-6f) return Quat::identity();
+                            if (c <= -1.0f + 1e-6f) {
+                                Vec3 ortho = (fabsf(f.x) < 0.9f) ? Vec3{1.0f, 0.0f, 0.0f} : Vec3{0.0f, 0.0f, 1.0f};
+                                Vec3 axis = Vec3::cross(f, ortho).normalized();
+                                return Quat::fromAxisAngle(axis, 3.14159265f).normalized();
+                            }
+                            Vec3 axis = Vec3::cross(f, t);
+                            Quat q{1.0f + c, axis.x, axis.y, axis.z};
+                            return q.normalized();
+                        };
+
+                        for (int i = 0; i < segments; ++i) {
+                            float theta1 = (float)i / (float)segments * 2.0f * 3.14159265f;
+                            float theta2 = (float)(i + 1) / (float)segments * 2.0f * 3.14159265f;
+
+                            Vec3 c1 = {majorR * cosf(theta1), 0.0f, majorR * sinf(theta1)};
+                            Vec3 c2 = {majorR * cosf(theta2), 0.0f, majorR * sinf(theta2)};
+                            Vec3 mid = (c1 + c2) * 0.5f;
+                            Vec3 d = (c2 - c1);
+                            float len = d.length();
+                            if (len < 1e-6f) continue;
+                            Vec3 dir = d * (1.0f / len);
 
                             CompoundChild child;
-                            child.collider = Collider::createConvex(verts);
-                            child.localPosition = center;
-                            child.localOrientation = Quat::identity();
+                            child.collider = Collider::createCapsule(minorR, 0.5f * len);
+                            child.localPosition = mid;
+                            child.localOrientation = quatFromTo({0.0f, 1.0f, 0.0f}, dir);
                             children.push_back(child);
                         }
-                        
+
                         b.collider = Collider::createCompound(children);
                         volume = 2.0f * 3.14159f * 3.14159f * majorR * minorR * minorR;
 
@@ -1085,6 +1072,20 @@ int main() {
                     Renderer::RenderStyle st;
                     st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
                     st.outline = currentMaterial.outline;
+
+                    if (currentShape == SpawnShape::Torus) {
+                        float s = std::clamp(currentSize, 0.10f, 1.25f);
+                        int key = (int)lrintf(s * 100.0f);
+                        auto it = torusRenderCache.find(key);
+                        if (it == torusRenderCache.end()) {
+                            float majorR = s * 1.0f;
+                            float minorR = s * 0.4f;
+                            auto mesh = makeTorusMesh(majorR, minorR, 48, 16);
+                            it = torusRenderCache.emplace(key, std::move(mesh)).first;
+                        }
+                        st.meshOverride = it->second;
+                    }
+
                     bodyStyles[rb] = st;
                 }
             }
@@ -1201,45 +1202,9 @@ int main() {
                         case SpawnShape::Torus: {
                             float majorR = s * 1.0f;
                             float minorR = s * 0.4f;
-                            // Render torus as compound convex hulls for hologram
-                            int segments = 16;
-                            for (int i = 0; i < segments; ++i) {
-                                float theta1 = (float)i / (float)segments * 2.0f * 3.14159f;
-                                float theta2 = (float)(i + 1) / (float)segments * 2.0f * 3.14159f;
-                                
-                                std::vector<Vec3> verts;
-                                int ringVerts = 8;
-                                for (int j = 0; j < ringVerts; ++j) {
-                                    float phi = (float)j / (float)ringVerts * 2.0f * 3.14159f;
-                                    float cp = cosf(phi);
-                                    float sp = sinf(phi);
-                                    
-                                    float c1 = cosf(theta1);
-                                    float s1 = sinf(theta1);
-                                    verts.push_back({(majorR + minorR * cp) * c1, minorR * sp, (majorR + minorR * cp) * s1});
-                                    
-                                    float c2 = cosf(theta2);
-                                    float s2 = sinf(theta2);
-                                    verts.push_back({(majorR + minorR * cp) * c2, minorR * sp, (majorR + minorR * cp) * s2});
-                                }
-                                
-                                // Compute centroid
-                                Vec3 center = {0.0f, 0.0f, 0.0f};
-                                for (const auto& v : verts) center = center + v;
-                                center = center * (1.0f / (float)verts.size());
-
-                                // Center vertices
-                                for (auto& v : verts) v = v - center;
-
-                                RigidBody part;
-                                part.collider = Collider::createConvex(verts);
-                                part.position = ghost.position + ghost.orientation.rotate(center);
-                                part.orientation = ghost.orientation;
-                                part.velocity = {0.0f, 0.0f, 0.0f};
-                                part.angularVelocity = {0.0f, 0.0f, 0.0f};
-                                renderer.drawRigidBody(&part, holo);
-                            }
-                            goto skip_ghost_draw;
+                            auto torusMesh = makeTorusMesh(majorR, minorR, 48, 16);
+                            ghost.collider = Collider::createMesh(torusMesh, torusMesh);
+                            break;
                         }
                         case SpawnShape::Ramp: {
                             float width = 2.5f * s;
@@ -1261,7 +1226,6 @@ int main() {
                     ghost.position = placePoint + placeNormal.normalized() * (offset + 0.002f);
 
                     renderer.drawRigidBody(&ghost, holo);
-                    skip_ghost_draw:;
                 }
             }
         }

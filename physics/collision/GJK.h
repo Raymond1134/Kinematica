@@ -14,13 +14,14 @@ struct GJKResult {
 inline GJKResult gjk(const RigidBody& A, const RigidBody& B) {
     GJKResult result;
     Simplex simplex;
-    Vec3 direction = {1.0f, 0.0f, 0.0f};
+    Vec3 direction = B.position - A.position;
+    if (direction.lengthSq() < 1e-12f) direction = {1.0f, 0.0f, 0.0f};
     SupportPoint v = supportPoint(A, B, direction);
 
     simplex.pushFront(v);
     direction = -v.p;
 
-    const int MAX_ITERATIONS = 32;
+    const int MAX_ITERATIONS = 48;
 
     for (int iter = 0; iter < MAX_ITERATIONS; ++iter) {
         if (direction.lengthSq() < 1e-8f) {
@@ -31,7 +32,9 @@ inline GJKResult gjk(const RigidBody& A, const RigidBody& B) {
 
         v = supportPoint(A, B, direction);
 
-        if (Vec3::dot(v.p, direction) < 1e-6f) {
+
+        float vd = Vec3::dot(v.p, direction);
+        if (vd < -1e-7f) {
             result.hit = false;
             return result;
         }
