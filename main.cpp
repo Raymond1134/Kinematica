@@ -1072,6 +1072,88 @@ int main() {
             shapeRadio(SpawnShape::Dodecahedron, "Dodecahedron");
             shapeRadio(SpawnShape::Ramp, "Ramp");
 
+            y += 12.0f;
+            DrawText("Prefabs", (int)x, (int)y, 18, RAYWHITE);
+            y += 24.0f;
+            
+            static int chainLength = 5;
+            {
+                DrawText("Chain Length", (int)x, (int)y, 16, Color{200, 200, 200, 255});
+                y += 18.0f;
+                bool changed = false;
+                Rectangle sld = {x, y, panel.width - 24.0f, 14.0f};
+                float val = (float)chainLength;
+                val = uiSlider(8888, sld, val, 2.0f, 20.0f, changed);
+                chainLength = (int)val;
+                y += 18.0f;
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", chainLength);
+                DrawText(buf, (int)x, (int)y, 14, Color{170, 170, 170, 255});
+                y += 22.0f;
+
+                Rectangle btn = {x, y, panel.width - 24.0f, 28.0f};
+                if (uiButton(btn, "Spawn Chain")) {
+                    Vec3 camPos = renderer.getCameraPosition();
+                    Vec3 camFwd = renderer.getCameraForward();
+                    
+                    Vec3 startPos;
+                    if (spawnMode == SpawnMode::Throw) {
+                        startPos = camPos + camFwd * 2.0f;
+                    } else {
+                        RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                        if (hit.hit) {
+                            startPos = hit.point + hit.normal * 0.1f;
+                            if (spawnMode == SpawnMode::PlaceStatic) {
+                                startPos += Vec3{0.0f, (float)chainLength * currentSize * 2.2f, 0.0f};
+                            }
+                        } else {
+                            startPos = camPos + camFwd * 5.0f;
+                        }
+                    }
+
+                    float radius = currentSize * 0.5f;
+                    float spacing = radius * 2.2f;
+                    RigidBody* prev = nullptr;
+
+                    for (int i = 0; i < chainLength; ++i) {
+                        RigidBody b;
+                        b.position = startPos + Vec3{0.0f, -i * spacing, 0.0f};
+                        b.collider = Collider::createSphere(radius);
+                        
+                        float density = std::max(1.0f, currentMaterial.density);
+                        float volume = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
+                        b.mass = std::max(0.05f, density * volume);
+                        
+                        b.restitution = currentMaterial.restitution;
+                        b.friction = currentMaterial.friction;
+                        
+                        if (spawnMode == SpawnMode::Throw) {
+                            b.velocity = camFwd * 10.0f;
+                        }
+
+                        if (i == 0 && spawnMode == SpawnMode::PlaceStatic) {
+                            b.isStatic = true;
+                        }
+
+                        dynamicBodies.push_back(b);
+                        RigidBody* curr = &dynamicBodies.back();
+                        physicsWorld.addRigidBody(curr);
+
+                        Renderer::RenderStyle st;
+                        st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
+                        st.outline = currentMaterial.outline;
+                        bodyStyles[curr] = st;
+
+                        if (prev) {
+                            Vec3 anchor = (prev->position + curr->position) * 0.5f;
+                            physicsWorld.addBallSocketJoint(prev, curr, anchor);
+                        }
+                        prev = curr;
+                    }
+                }
+                y += 34.0f;
+            }
+
             y += 8.0f;
             DrawText("Size", (int)x, (int)y, 18, RAYWHITE);
             y += 22.0f;

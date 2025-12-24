@@ -15,6 +15,16 @@ PhysicsWorld::PhysicsWorld() {
 
 void PhysicsWorld::addRigidBody(RigidBody* body) { bodies.push_back(body); }
 
+void PhysicsWorld::addBallSocketJoint(RigidBody* a, RigidBody* b, const Vec3& anchorWorld) {
+    BallSocketJoint j;
+    j.a = a;
+    j.b = b;
+    j.localAnchorA = a->orientation.rotateInv(anchorWorld - a->position);
+    j.localAnchorB = b->orientation.rotateInv(anchorWorld - b->position);
+    j.impulseSum = {0.0f, 0.0f, 0.0f};
+    ballSocketJoints.push_back(j);
+}
+
 void PhysicsWorld::step(float deltaTime) {
     using clock = std::chrono::steady_clock;
     auto tStep0 = clock::now();
@@ -2092,6 +2102,90 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
 
 #include <numeric>
 
+void PhysicsWorld::solveJoints(const std::vector<BallSocketJoint*>& joints, float dt, bool isFirst) {
+    float invDt = (dt > 0.0f) ? 1.0f / dt : 0.0f;
+
+    if (isFirst) {
+        for (BallSocketJoint* j : joints) {
+            RigidBody* a = j->a;
+            RigidBody* b = j->b;
+            if (!a || !b) continue;
+
+            j->rA = a->orientation.rotate(j->localAnchorA);
+            j->rB = b->orientation.rotate(j->localAnchorB);
+
+            Vec3 pA = a->position + j->rA;
+            Vec3 pB = b->position + j->rB;
+            Vec3 dp = pA - pB;
+
+            float beta = 0.2f;
+            j->bias = dp * (-beta * invDt);
+
+            Mat3 K;
+            float invMassA = (a->isStatic) ? 0.0f : (1.0f / a->mass);
+            float invMassB = (b->isStatic) ? 0.0f : (1.0f / b->mass);
+
+            for (int i = 0; i < 3; ++i) {
+                Vec3 v = {0, 0, 0};
+                if (i == 0) v.x = 1.0f;
+                else if (i == 1) v.y = 1.0f;
+                else v.z = 1.0f;
+
+                Vec3 kv = v * (invMassA + invMassB);
+                
+                if (!a->isStatic) {
+                    Vec3 raxv = Vec3::cross(j->rA, v);
+                    Vec3 term = invInertiaWorldMul(a, raxv);
+                    kv += Vec3::cross(term, j->rA);
+                }
+                if (!b->isStatic) {
+                    Vec3 rbxv = Vec3::cross(j->rB, v);
+                    Vec3 term = invInertiaWorldMul(b, rbxv);
+                    kv += Vec3::cross(term, j->rB);
+                }
+                K.cols[i] = kv;
+            }
+            j->massMatrix = K.inverse();
+
+            Vec3 P = j->impulseSum;
+            if (!a->isStatic) {
+                a->velocity += P * invMassA;
+                a->angularVelocity += invInertiaWorldMul(a, Vec3::cross(j->rA, P));
+            }
+            if (!b->isStatic) {
+                b->velocity -= P * invMassB;
+                b->angularVelocity -= invInertiaWorldMul(b, Vec3::cross(j->rB, P));
+            }
+        }
+    }
+
+    for (BallSocketJoint* j : joints) {
+        RigidBody* a = j->a;
+        RigidBody* b = j->b;
+        if (!a || !b) continue;
+
+        Vec3 vA = (!a->isStatic) ? (a->velocity + Vec3::cross(a->angularVelocity, j->rA)) : Vec3{0,0,0};
+        Vec3 vB = (!b->isStatic) ? (b->velocity + Vec3::cross(b->angularVelocity, j->rB)) : Vec3{0,0,0};
+        Vec3 dv = vA - vB;
+
+        Vec3 impulse = j->massMatrix * (-dv + j->bias);
+        
+        j->impulseSum += impulse;
+
+        float invMassA = (a->isStatic) ? 0.0f : (1.0f / a->mass);
+        float invMassB = (b->isStatic) ? 0.0f : (1.0f / b->mass);
+
+        if (!a->isStatic) {
+            a->velocity += impulse * invMassA;
+            a->angularVelocity += invInertiaWorldMul(a, Vec3::cross(j->rA, impulse));
+        }
+        if (!b->isStatic) {
+            b->velocity -= impulse * invMassB;
+            b->angularVelocity -= invInertiaWorldMul(b, Vec3::cross(j->rB, impulse));
+        }
+    }
+}
+
 void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
     int dynamicCount = 0;
     for (RigidBody* b : bodies) {
@@ -2131,6 +2225,13 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
         }
     }
 
+    for (auto& j : ballSocketJoints) {
+        if (j.a && j.b && !j.a->isStatic && !j.b->isStatic &&
+            j.a->solverIndex != -1 && j.b->solverIndex != -1) {
+            unite(j.a->solverIndex, j.b->solverIndex);
+        }
+    }
+
     if ((int)islandRootToIdBuffer.size() < dynamicCount) {
         islandRootToIdBuffer.resize(dynamicCount);
     }
@@ -2140,6 +2241,13 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
         islandBuffer.resize(dynamicCount);
         for (int i = 0; i < dynamicCount; ++i) {
             if (islandBuffer[i].capacity() < 32) islandBuffer[i].reserve(32);
+        }
+    }
+
+    if ((int)islandJointsBuffer.size() < dynamicCount) {
+        islandJointsBuffer.resize(dynamicCount);
+        for (int i = 0; i < dynamicCount; ++i) {
+            if (islandJointsBuffer[i].capacity() < 8) islandJointsBuffer[i].reserve(8);
         }
     }
     
@@ -2159,8 +2267,28 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
             islandId = islandCount++;
             islandRootToIdBuffer[root] = islandId;
             islandBuffer[islandId].clear();
+            islandJointsBuffer[islandId].clear();
         }
         islandBuffer[islandId].push_back(&m);
+    }
+
+    for (auto& j : ballSocketJoints) {
+        RigidBody* dyn = nullptr;
+        if (j.a && !j.a->isStatic && j.a->solverIndex != -1) dyn = j.a;
+        else if (j.b && !j.b->isStatic && j.b->solverIndex != -1) dyn = j.b;
+
+        if (!dyn) continue;
+
+        int root = find(dyn->solverIndex);
+        int islandId = islandRootToIdBuffer[root];
+
+        if (islandId == -1) {
+            islandId = islandCount++;
+            islandRootToIdBuffer[root] = islandId;
+            islandBuffer[islandId].clear();
+            islandJointsBuffer[islandId].clear();
+        }
+        islandJointsBuffer[islandId].push_back(&j);
     }
 
     const int nIslands = islandCount;
@@ -2171,9 +2299,11 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
         #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < nIslands; ++i) {
             const std::vector<ContactManifold*>& islandContacts = islandBuffer[i];
+            const std::vector<BallSocketJoint*>& islandJoints = islandJointsBuffer[i];
             
             for (int pass = 0; pass < iterCount; ++pass) {
                 solveContacts(islandContacts, pass == 0);
+                solveJoints(islandJoints, currentDt, pass == 0);
             }
             
             if (restPasses > 0) {
@@ -2182,8 +2312,10 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
         }
     } else if (nIslands == 1) {
         const std::vector<ContactManifold*>& islandContacts = islandBuffer[0];
+        const std::vector<BallSocketJoint*>& islandJoints = islandJointsBuffer[0];
         for (int pass = 0; pass < iterCount; ++pass) {
             solveContacts(islandContacts, pass == 0);
+            solveJoints(islandJoints, currentDt, pass == 0);
         }
         if (restPasses > 0) {
             solveRestingFriction(islandContacts, restPasses);

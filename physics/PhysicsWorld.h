@@ -4,6 +4,7 @@
 #include "collision/EPATypes.h"
 #include "RigidBody.h"
 #include "Spring.h"
+#include "Constraints.h"
 
 #include <vector>
 #include <cmath>
@@ -42,6 +43,7 @@ public:
     float currentDt = 1.0f / 60.0f;
     Vec3 gravity = {0.0f, -9.81f, 0.0f};
     std::vector<Spring> springs;
+    std::vector<BallSocketJoint> ballSocketJoints;
 
     // Ground plane at y=floorY. This is intentionally a dedicated plane contact.
     float floorY = 0.0f;
@@ -70,6 +72,7 @@ public:
     float restingMaxBodySpeed = 0.60f;
     float restingMaxBodyAngularSpeed = 2.50f;
 
+    void addBallSocketJoint(RigidBody* a, RigidBody* b, const Vec3& anchorWorld);
     void addRigidBody(RigidBody* body);
     void step(float deltaTime);
 
@@ -209,6 +212,7 @@ public:
     void solveContacts(const std::vector<ContactManifold*>& ms, bool applyPositionCorrection);
     void solveRestingFriction(std::vector<ContactManifold>& ms, int passes);
     void solveRestingFriction(const std::vector<ContactManifold*>& ms, int passes);
+    void solveJoints(const std::vector<BallSocketJoint*>& joints, float dt, bool isFirst);
     void solveIslands(std::vector<ContactManifold>& contacts);
 
     static RigidBody makeChildProxyBody(const RigidBody* parent, const CompoundChild& child);
@@ -222,6 +226,7 @@ public:
 
 private:
     std::vector<std::vector<ContactManifold*>> islandBuffer;
+    std::vector<std::vector<BallSocketJoint*>> islandJointsBuffer;
     std::vector<int> islandParentBuffer;
     std::vector<int> islandRootToIdBuffer;
 
