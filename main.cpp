@@ -3,6 +3,7 @@
 #include "physics/Spring.h"
 #include "physics/collision/TriangleMesh.h"
 #include "render/Renderer.h"
+#include "ui_dropdown.h"
 #include <chrono>
 #include <raylib.h>
 #include <algorithm>
@@ -247,6 +248,8 @@ enum class SpawnShape {
     Bipyramid,
     Dodecahedron,
     Ramp,
+    Torus,
+    Chain,
 };
 
 enum class SpawnMode {
@@ -454,6 +457,52 @@ static RayHit raycastWorldPlacement(const Vec3& ro, const Vec3& rd, float floorY
     return best;
 }
 
+static std::shared_ptr<TriangleMesh> makeTorusMesh(float majorRadius, float minorRadius, int majorSegments, int minorSegments) {
+    std::vector<Vec3> vertices;
+    std::vector<uint32_t> indices;
+
+    for (int i = 0; i <= majorSegments; ++i) {
+        float u = (float)i / majorSegments * 2.0f * 3.14159f;
+        float cosU = cosf(u);
+        float sinU = sinf(u);
+
+        for (int j = 0; j <= minorSegments; ++j) {
+            float v = (float)j / minorSegments * 2.0f * 3.14159f;
+            float cosV = cosf(v);
+            float sinV = sinf(v);
+
+            float x = (majorRadius + minorRadius * cosV) * cosU;
+            float y = minorRadius * sinV;
+            float z = (majorRadius + minorRadius * cosV) * sinU;
+
+            vertices.push_back({x, y, z});
+        }
+    }
+
+    for (int i = 0; i < majorSegments; ++i) {
+        for (int j = 0; j < minorSegments; ++j) {
+            int nextI = (i + 1);
+            
+            int a = i * (minorSegments + 1) + j;
+            int b = nextI * (minorSegments + 1) + j;
+            int c = nextI * (minorSegments + 1) + (j + 1);
+            int d = i * (minorSegments + 1) + (j + 1);
+
+            indices.push_back(a);
+            indices.push_back(d);
+            indices.push_back(c);
+
+            indices.push_back(a);
+            indices.push_back(c);
+            indices.push_back(b);
+        }
+    }
+
+    auto mesh = std::make_shared<TriangleMesh>();
+    mesh->build(vertices, indices);
+    return mesh;
+}
+
 static std::shared_ptr<TriangleMesh> makeRampMesh(float width, float length, float height) {
     float w = std::max(0.01f, width);
     float l = std::max(0.01f, length);
@@ -568,6 +617,7 @@ static std::vector<Vec3> makeDodecaVerts(float s) {
 }
 
 static bool uiRadio(Rectangle r, const char* text, bool selected) {
+    if (uiIsBlocked()) return false;
     Vector2 m = GetMousePosition();
     bool hot = CheckCollisionPointRec(m, r);
     Color bg = hot ? Color{45, 45, 45, 255} : Color{25, 25, 25, 255};
@@ -585,6 +635,7 @@ static bool uiRadio(Rectangle r, const char* text, bool selected) {
 }
 
 static bool uiButton(Rectangle r, const char* text) {
+    if (uiIsBlocked()) return false;
     Vector2 m = GetMousePosition();
     bool hot = CheckCollisionPointRec(m, r);
     Color bg = hot ? Color{45, 45, 45, 255} : Color{25, 25, 25, 255};
@@ -599,6 +650,7 @@ static bool uiButton(Rectangle r, const char* text) {
 }
 
 static float uiSlider(int id, Rectangle r, float value, float minV, float maxV, bool& changed) {
+    if (uiIsBlocked()) return value;
     Vector2 m = GetMousePosition();
     bool hot = CheckCollisionPointRec(m, r);
     static bool dragging = false;
@@ -660,6 +712,7 @@ int main() {
     bool floorMaterialIsCustom = presetMaterials.empty();
 
     SpawnShape currentShape = SpawnShape::Cube;
+    static int chainLength = 5;
     float currentSize = 0.35f;
 
     SpawnMode spawnMode = SpawnMode::Throw;
@@ -765,124 +818,275 @@ int main() {
             Vec3 right = Vec3::cross(up, camFwd).normalized();
             if (right.lengthSq() < 1e-8f) right = {1.0f, 0.0f, 0.0f};
 
-            RigidBody b;
-            b.position = camPos + camFwd * 2.0f;
-            b.velocity = {0.0f, 0.0f, 0.0f};
-            b.orientation = Quat::identity();
-            b.angularVelocity = {0.0f, 0.0f, 0.0f};
-
-            if (spawnMode == SpawnMode::Throw) {
-                b.position = camPos + camFwd * 2.0f;
-                b.velocity = camFwd * 10.0f;
-
-                float tiltDeg = (float)GetRandomValue(-5, 5);
-                float rollDeg = (float)GetRandomValue(-5, 5);
-                Quat qTilt = Quat::fromAxisAngle(right, tiltDeg * DEG2RAD);
-                Quat qRoll = Quat::fromAxisAngle(camFwd, rollDeg * DEG2RAD);
-                b.orientation = (qRoll * qTilt).normalized();
-
-                float spin = 7.0f;
-                float spinJitter = (float)GetRandomValue(-5, 5) / 5.0f;
-                b.angularVelocity = right * (spin * (1.0f + 0.25f * spinJitter)) + up * (1.0f * spinJitter);
-            }
-
-            b.isStatic = (spawnMode == SpawnMode::PlaceStatic);
-            b.sleeping = (spawnMode != SpawnMode::Throw);
-            b.sleepTimer = (spawnMode != SpawnMode::Throw) ? 1.0f : 0.0f;
-
-            b.friction = std::clamp(currentMaterial.friction, 0.0f, 2.0f);
-            b.restitution = std::clamp(currentMaterial.restitution, 0.0f, 1.0f);
-
-            float volume = 0.0f;
-            float s = std::clamp(currentSize, 0.10f, 1.25f);
-            switch (currentShape) {
-                case SpawnShape::Sphere: {
-                    b.collider = Collider::createSphere(s);
-                    volume = (4.0f / 3.0f) * 3.14159265f * s * s * s;
-                    break;
+            if (currentShape == SpawnShape::Chain) {
+                Vec3 startPos;
+                if (spawnMode == SpawnMode::Throw) {
+                    startPos = camPos + camFwd * 2.0f;
+                } else {
+                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    if (hit.hit) {
+                        startPos = hit.point + hit.normal * 0.1f;
+                    } else {
+                        startPos = camPos + camFwd * 5.0f;
+                    }
                 }
-                case SpawnShape::Cube: {
-                    b.collider = Collider::createBox({s, s, s});
-                    volume = (2.0f * s) * (2.0f * s) * (2.0f * s);
-                    break;
-                }
-                case SpawnShape::Capsule: {
-                    float r = s;
-                    float hh = 1.5f * s;
-                    b.collider = Collider::createCapsule(r, hh);
-                    float cylH = 2.0f * hh;
-                    volume = 3.14159265f * r * r * cylH + (4.0f / 3.0f) * 3.14159265f * r * r * r;
-                    break;
-                }
-                case SpawnShape::Tetrahedron: {
-                    auto verts = makeTetraVerts(s);
-                    b.collider = Collider::createConvex(verts);
-                    volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
-                    break;
-                }
-                case SpawnShape::Bipyramid: {
-                    auto verts = makePentagonalBipyramidVerts(s);
-                    b.collider = Collider::createConvex(verts);
-                    volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
-                    break;
-                }
-                case SpawnShape::Dodecahedron: {
-                    auto verts = makeDodecaVerts(s);
-                    b.collider = Collider::createConvex(verts);
-                    volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
-                    break;
-                }
-                case SpawnShape::Ramp: {
-                    float width = 2.5f * s;
-                    float length = 4.0f * s;
-                    float height = 1.4f * s;
-                    auto rampRender = makeRampMesh(width, length, height);
-                    auto rampCollision = shiftDown ? rampRender : makeRampCollisionMesh(width, length, height);
-                    b.collider = Collider::createMesh(rampCollision, rampRender);
 
-                    Vec3 f = {camFwd.x, 0.0f, camFwd.z};
-                    if (f.lengthSq() < 1e-8f) f = {0.0f, 0.0f, 1.0f};
-                    f = f.normalized();
-                    float yaw = atan2f(f.x, f.z);
-                    Quat qYaw = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw);
-                    b.orientation = qYaw.normalized();
+                float radius = currentSize * 0.5f;
+                float spacing = radius * 2.05f;
+                if (spawnMode == SpawnMode::PlaceStatic) {
+                    startPos.y += (float)(chainLength - 1) * spacing;
+                }
 
+                RigidBody* prev = nullptr;
+
+                for (int i = 0; i < chainLength; ++i) {
+                    RigidBody b;
+                    b.position = startPos + Vec3{0.0f, -i * spacing, 0.0f};
+                    b.collider = Collider::createSphere(radius);
+                    
+                    float density = std::max(1.0f, currentMaterial.density);
+                    float volume = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
+                    b.mass = std::max(0.05f, density * volume);
+                    
+                    b.restitution = currentMaterial.restitution;
+                    b.friction = currentMaterial.friction;
+                    
+                    b.sleeping = false;
+                    b.sleepTimer = 0.0f;
+                    
                     if (spawnMode == SpawnMode::Throw) {
-                        b.position = camPos + camFwd * 2.0f;
                         b.velocity = camFwd * 10.0f;
-                        b.angularVelocity = {0.0f, 0.0f, 0.0f};
                     }
 
-                    volume = width * length * std::max(0.01f, height) * 0.5f;
-                    break;
-                }
-            }
+                    if (i == 0 && spawnMode == SpawnMode::PlaceStatic) {
+                        b.isStatic = true;
+                    }
 
-            if (spawnMode != SpawnMode::Throw) {
-                RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                Vec3 placePoint = camPos + camFwd * 2.0f;
-                Vec3 placeNormal = {0.0f, 1.0f, 0.0f};
-                if (hit.hit) {
-                    placePoint = hit.point;
-                    placeNormal = hit.normal;
+                    dynamicBodies.push_back(b);
+                    RigidBody* curr = &dynamicBodies.back();
+                    physicsWorld.addRigidBody(curr);
+
+                    Renderer::RenderStyle st;
+                    st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
+                    st.outline = currentMaterial.outline;
+                    bodyStyles[curr] = st;
+
+                    if (prev) {
+                        Vec3 anchor = (prev->position + curr->position) * 0.5f;
+                        physicsWorld.addBallSocketJoint(prev, curr, anchor);
+                    }
+                    prev = curr;
                 }
-                float offset = placementOffsetAlongNormal(b.collider, b.orientation, placeNormal);
-                b.position = placePoint + placeNormal.normalized() * (offset + 0.002f);
+            } else {
+                RigidBody b;
+                b.position = camPos + camFwd * 2.0f;
                 b.velocity = {0.0f, 0.0f, 0.0f};
+                b.orientation = Quat::identity();
                 b.angularVelocity = {0.0f, 0.0f, 0.0f};
-            }
 
-            float density = std::max(1.0f, currentMaterial.density);
-            b.mass = std::max(0.05f, density * std::max(0.0f, volume));
+                if (spawnMode == SpawnMode::Throw) {
+                    b.position = camPos + camFwd * 2.0f;
+                    b.velocity = camFwd * 10.0f;
 
-            dynamicBodies.push_back(b);
-            physicsWorld.addRigidBody(&dynamicBodies.back());
-            {
-                const RigidBody* rb = &dynamicBodies.back();
-                Renderer::RenderStyle st;
-                st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
-                st.outline = currentMaterial.outline;
-                bodyStyles[rb] = st;
+                    float tiltDeg = (float)GetRandomValue(-5, 5);
+                    float rollDeg = (float)GetRandomValue(-5, 5);
+                    Quat qTilt = Quat::fromAxisAngle(right, tiltDeg * DEG2RAD);
+                    Quat qRoll = Quat::fromAxisAngle(camFwd, rollDeg * DEG2RAD);
+                    b.orientation = (qRoll * qTilt).normalized();
+
+                    float spin = 7.0f;
+                    float spinJitter = (float)GetRandomValue(-5, 5) / 5.0f;
+                    b.angularVelocity = right * (spin * (1.0f + 0.25f * spinJitter)) + up * (1.0f * spinJitter);
+                }
+
+                b.isStatic = (spawnMode == SpawnMode::PlaceStatic);
+                b.sleeping = (spawnMode != SpawnMode::Throw);
+                b.sleepTimer = (spawnMode != SpawnMode::Throw) ? 1.0f : 0.0f;
+
+                b.friction = std::clamp(currentMaterial.friction, 0.0f, 2.0f);
+                b.restitution = std::clamp(currentMaterial.restitution, 0.0f, 1.0f);
+
+                float volume = 0.0f;
+                float s = std::clamp(currentSize, 0.10f, 1.25f);
+                switch (currentShape) {
+                    case SpawnShape::Sphere: {
+                        b.collider = Collider::createSphere(s);
+                        volume = (4.0f / 3.0f) * 3.14159265f * s * s * s;
+                        break;
+                    }
+                    case SpawnShape::Cube: {
+                        b.collider = Collider::createBox({s, s, s});
+                        volume = (2.0f * s) * (2.0f * s) * (2.0f * s);
+                        break;
+                    }
+                    case SpawnShape::Capsule: {
+                        float r = s;
+                        float hh = 1.5f * s;
+                        b.collider = Collider::createCapsule(r, hh);
+                        float cylH = 2.0f * hh;
+                        volume = 3.14159265f * r * r * cylH + (4.0f / 3.0f) * 3.14159265f * r * r * r;
+                        break;
+                    }
+                    case SpawnShape::Tetrahedron: {
+                        auto verts = makeTetraVerts(s);
+                        b.collider = Collider::createConvex(verts);
+                        volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
+                        break;
+                    }
+                    case SpawnShape::Bipyramid: {
+                        auto verts = makePentagonalBipyramidVerts(s);
+                        b.collider = Collider::createConvex(verts);
+                        volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
+                        break;
+                    }
+                    case SpawnShape::Dodecahedron: {
+                        auto verts = makeDodecaVerts(s);
+                        b.collider = Collider::createConvex(verts);
+                        volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
+                        break;
+                    }
+                    case SpawnShape::Ramp: {
+                        float width = 2.5f * s;
+                        float length = 4.0f * s;
+                        float height = 1.4f * s;
+                        auto rampRender = makeRampMesh(width, length, height);
+                        auto rampCollision = shiftDown ? rampRender : makeRampCollisionMesh(width, length, height);
+                        b.collider = Collider::createMesh(rampCollision, rampRender);
+
+                        Vec3 f = {camFwd.x, 0.0f, camFwd.z};
+                        if (f.lengthSq() < 1e-8f) f = {0.0f, 0.0f, 1.0f};
+                        f = f.normalized();
+                        float yaw = atan2f(f.x, f.z);
+                        Quat qYaw = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw);
+                        b.orientation = qYaw.normalized();
+
+                        if (spawnMode == SpawnMode::Throw) {
+                            b.position = camPos + camFwd * 2.0f;
+                            b.velocity = camFwd * 10.0f;
+                            b.angularVelocity = {0.0f, 0.0f, 0.0f};
+                        }
+
+                        volume = width * length * std::max(0.01f, height) * 0.5f;
+                        break;
+                    }
+                    case SpawnShape::Torus: {
+                        float majorR = s * 1.0f;
+                        float minorR = s * 0.4f;
+                        
+                        // Create a compound collider of convex hulls (cylinder segments)
+                        std::vector<CompoundChild> children;
+                        int segments = 16;
+                        for (int i = 0; i < segments; ++i) {
+                            float theta1 = (float)i / (float)segments * 2.0f * 3.14159f;
+                            float theta2 = (float)(i + 1) / (float)segments * 2.0f * 3.14159f;
+                            
+                            // Generate vertices for a segment connecting ring at theta1 to ring at theta2
+                            std::vector<Vec3> verts;
+                            int ringVerts = 8;
+                            for (int j = 0; j < ringVerts; ++j) {
+                                float phi = (float)j / (float)ringVerts * 2.0f * 3.14159f;
+                                float cp = cosf(phi);
+                                float sp = sinf(phi);
+                                
+                                // Ring 1
+                                float c1 = cosf(theta1);
+                                float s1 = sinf(theta1);
+                                Vec3 p1 = {
+                                    (majorR + minorR * cp) * c1,
+                                    minorR * sp,
+                                    (majorR + minorR * cp) * s1
+                                };
+                                verts.push_back(p1);
+                                
+                                // Ring 2
+                                float c2 = cosf(theta2);
+                                float s2 = sinf(theta2);
+                                Vec3 p2 = {
+                                    (majorR + minorR * cp) * c2,
+                                    minorR * sp,
+                                    (majorR + minorR * cp) * s2
+                                };
+                                verts.push_back(p2);
+                            }
+                            
+                            // Compute centroid to center the convex hull (improves physics stability)
+                            Vec3 center = {0.0f, 0.0f, 0.0f};
+                            for (const auto& v : verts) center = center + v;
+                            center = center * (1.0f / (float)verts.size());
+
+                            // Center vertices
+                            for (auto& v : verts) v = v - center;
+
+                            CompoundChild child;
+                            child.collider = Collider::createConvex(verts);
+                            child.localPosition = center;
+                            child.localOrientation = Quat::identity();
+                            children.push_back(child);
+                        }
+                        
+                        b.collider = Collider::createCompound(children);
+                        volume = 2.0f * 3.14159f * 3.14159f * majorR * minorR * minorR;
+
+                        // Explicit inertia tensor for Torus (approximate as thin ring + tube)
+                        // I_axis = M * (R^2 + 3/4 r^2)
+                        // I_perp = M * (1/2 R^2 + 5/8 r^2)
+                        float M = std::max(0.05f, std::max(1.0f, currentMaterial.density) * volume);
+                        float R = majorR;
+                        float r = minorR;
+                        float I_axis = M * (R*R + 0.75f*r*r);
+                        float I_perp = M * (0.5f*R*R + 0.625f*r*r);
+                        
+                        b.useExplicitInertia = true;
+                        b.explicitInvInertia = {
+                            (I_perp > 0.0001f) ? 1.0f/I_perp : 0.0f,
+                            (I_axis > 0.0001f) ? 1.0f/I_axis : 0.0f, // Y is up (axis of torus)
+                            (I_perp > 0.0001f) ? 1.0f/I_perp : 0.0f
+                        };
+                        break;
+                    }
+                }
+
+                if (spawnMode != SpawnMode::Throw) {
+                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    Vec3 placePoint = camPos + camFwd * 2.0f;
+                    Vec3 placeNormal = {0.0f, 1.0f, 0.0f};
+                    if (hit.hit) {
+                        placePoint = hit.point;
+                        placeNormal = hit.normal;
+                    }
+                    float offset = placementOffsetAlongNormal(b.collider, b.orientation, placeNormal);
+                    b.position = placePoint + placeNormal.normalized() * (offset + 0.002f);
+                    b.velocity = {0.0f, 0.0f, 0.0f};
+                    b.angularVelocity = {0.0f, 0.0f, 0.0f};
+                }
+
+                float density = std::max(1.0f, currentMaterial.density);
+                b.mass = std::max(0.05f, density * std::max(0.0f, volume));
+
+                if (currentShape == SpawnShape::Torus) {
+                    float s = std::clamp(currentSize, 0.10f, 1.25f);
+                    float R = s * 1.0f;
+                    float r = s * 0.4f;
+                    float I_axis = b.mass * (R*R + 0.75f*r*r);
+                    float I_diam = b.mass * (0.5f*R*R + 0.625f*r*r);
+                    
+                    b.useExplicitInertia = true;
+                    b.explicitInvInertia = {
+                        (I_diam > 0.0001f) ? 1.0f/I_diam : 0.0f,
+                        (I_axis > 0.0001f) ? 1.0f/I_axis : 0.0f,
+                        (I_diam > 0.0001f) ? 1.0f/I_diam : 0.0f
+                    };
+                }
+
+                dynamicBodies.push_back(b);
+                physicsWorld.addRigidBody(&dynamicBodies.back());
+                {
+                    const RigidBody* rb = &dynamicBodies.back();
+                    Renderer::RenderStyle st;
+                    st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
+                    st.outline = currentMaterial.outline;
+                    bodyStyles[rb] = st;
+                }
             }
         }
 
@@ -944,60 +1148,125 @@ int main() {
                     placeNormal = hit.normal;
                 }
 
-                RigidBody ghost;
-                ghost.position = placePoint;
-                ghost.velocity = {0.0f, 0.0f, 0.0f};
-                ghost.angularVelocity = {0.0f, 0.0f, 0.0f};
-                ghost.orientation = Quat::identity();
-
-                float s = std::clamp(currentSize, 0.10f, 1.25f);
-                switch (currentShape) {
-                    case SpawnShape::Sphere:
-                        ghost.collider = Collider::createSphere(s);
-                        break;
-                    case SpawnShape::Cube:
-                        ghost.collider = Collider::createBox({s, s, s});
-                        break;
-                    case SpawnShape::Capsule:
-                        ghost.collider = Collider::createCapsule(s, 1.5f * s);
-                        break;
-                    case SpawnShape::Tetrahedron:
-                        ghost.collider = Collider::createConvex(makeTetraVerts(s));
-                        break;
-                    case SpawnShape::Bipyramid:
-                        ghost.collider = Collider::createConvex(makePentagonalBipyramidVerts(s));
-                        break;
-                    case SpawnShape::Dodecahedron:
-                        ghost.collider = Collider::createConvex(makeDodecaVerts(s));
-                        break;
-                    case SpawnShape::Ramp: {
-                        float width = 2.5f * s;
-                        float length = 4.0f * s;
-                        float height = 1.4f * s;
-                        auto rampRender = makeRampMesh(width, length, height);
-                        auto rampCollision = shiftDown ? rampRender : makeRampCollisionMesh(width, length, height);
-                        ghost.collider = Collider::createMesh(rampCollision, rampRender);
-                        Vec3 f = {camFwd.x, 0.0f, camFwd.z};
-                        if (f.lengthSq() < 1e-8f) f = {0.0f, 0.0f, 1.0f};
-                        f = f.normalized();
-                        float yaw = atan2f(f.x, f.z);
-                        ghost.orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw).normalized();
-                        break;
-                    }
-                }
-
-                float offset = placementOffsetAlongNormal(ghost.collider, ghost.orientation, placeNormal);
-                ghost.position = placePoint + placeNormal.normalized() * (offset + 0.002f);
-
                 Renderer::RenderStyle holo;
                 holo.color = Color{0, 190, 255, 90};
                 holo.outline = true;
-                renderer.drawRigidBody(&ghost, holo);
+
+                if (currentShape == SpawnShape::Chain) {
+                    Vec3 startPos = placePoint + placeNormal * 0.1f;
+                    
+                    float radius = currentSize * 0.5f;
+                    float spacing = radius * 2.05f;
+
+                    if (spawnMode == SpawnMode::PlaceStatic) {
+                        startPos.y += (float)(chainLength - 1) * spacing;
+                    }
+                    
+                    for (int i = 0; i < chainLength; ++i) {
+                        RigidBody linkGhost;
+                        linkGhost.position = startPos + Vec3{0.0f, -i * spacing, 0.0f};
+                        linkGhost.collider = Collider::createSphere(radius);
+                        linkGhost.orientation = Quat::identity();
+                        linkGhost.velocity = {0.0f, 0.0f, 0.0f};
+                        linkGhost.angularVelocity = {0.0f, 0.0f, 0.0f};
+                        renderer.drawRigidBody(&linkGhost, holo);
+                    }
+                } else {
+                    RigidBody ghost;
+                    ghost.position = placePoint;
+                    ghost.velocity = {0.0f, 0.0f, 0.0f};
+                    ghost.angularVelocity = {0.0f, 0.0f, 0.0f};
+                    ghost.orientation = Quat::identity();
+
+                    float s = std::clamp(currentSize, 0.10f, 1.25f);
+                    switch (currentShape) {
+                        case SpawnShape::Sphere:
+                            ghost.collider = Collider::createSphere(s);
+                            break;
+                        case SpawnShape::Cube:
+                            ghost.collider = Collider::createBox({s, s, s});
+                            break;
+                        case SpawnShape::Capsule:
+                            ghost.collider = Collider::createCapsule(s, 1.5f * s);
+                            break;
+                        case SpawnShape::Tetrahedron:
+                            ghost.collider = Collider::createConvex(makeTetraVerts(s));
+                            break;
+                        case SpawnShape::Bipyramid:
+                            ghost.collider = Collider::createConvex(makePentagonalBipyramidVerts(s));
+                            break;
+                        case SpawnShape::Dodecahedron:
+                            ghost.collider = Collider::createConvex(makeDodecaVerts(s));
+                            break;
+                        case SpawnShape::Torus: {
+                            float majorR = s * 1.0f;
+                            float minorR = s * 0.4f;
+                            // Render torus as compound convex hulls for hologram
+                            int segments = 16;
+                            for (int i = 0; i < segments; ++i) {
+                                float theta1 = (float)i / (float)segments * 2.0f * 3.14159f;
+                                float theta2 = (float)(i + 1) / (float)segments * 2.0f * 3.14159f;
+                                
+                                std::vector<Vec3> verts;
+                                int ringVerts = 8;
+                                for (int j = 0; j < ringVerts; ++j) {
+                                    float phi = (float)j / (float)ringVerts * 2.0f * 3.14159f;
+                                    float cp = cosf(phi);
+                                    float sp = sinf(phi);
+                                    
+                                    float c1 = cosf(theta1);
+                                    float s1 = sinf(theta1);
+                                    verts.push_back({(majorR + minorR * cp) * c1, minorR * sp, (majorR + minorR * cp) * s1});
+                                    
+                                    float c2 = cosf(theta2);
+                                    float s2 = sinf(theta2);
+                                    verts.push_back({(majorR + minorR * cp) * c2, minorR * sp, (majorR + minorR * cp) * s2});
+                                }
+                                
+                                // Compute centroid
+                                Vec3 center = {0.0f, 0.0f, 0.0f};
+                                for (const auto& v : verts) center = center + v;
+                                center = center * (1.0f / (float)verts.size());
+
+                                // Center vertices
+                                for (auto& v : verts) v = v - center;
+
+                                RigidBody part;
+                                part.collider = Collider::createConvex(verts);
+                                part.position = ghost.position + ghost.orientation.rotate(center);
+                                part.orientation = ghost.orientation;
+                                part.velocity = {0.0f, 0.0f, 0.0f};
+                                part.angularVelocity = {0.0f, 0.0f, 0.0f};
+                                renderer.drawRigidBody(&part, holo);
+                            }
+                            goto skip_ghost_draw;
+                        }
+                        case SpawnShape::Ramp: {
+                            float width = 2.5f * s;
+                            float length = 4.0f * s;
+                            float height = 1.4f * s;
+                            auto rampRender = makeRampMesh(width, length, height);
+                            auto rampCollision = shiftDown ? rampRender : makeRampCollisionMesh(width, length, height);
+                            ghost.collider = Collider::createMesh(rampCollision, rampRender);
+                            Vec3 f = {camFwd.x, 0.0f, camFwd.z};
+                            if (f.lengthSq() < 1e-8f) f = {0.0f, 0.0f, 1.0f};
+                            f = f.normalized();
+                            float yaw = atan2f(f.x, f.z);
+                            ghost.orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw).normalized();
+                            break;
+                        }
+                    }
+
+                    float offset = placementOffsetAlongNormal(ghost.collider, ghost.orientation, placeNormal);
+                    ghost.position = placePoint + placeNormal.normalized() * (offset + 0.002f);
+
+                    renderer.drawRigidBody(&ghost, holo);
+                    skip_ghost_draw:;
+                }
             }
         }
         renderer.end3D();
         {
-            static float uiScroll = 0.0f;
             static bool hudCollapsed = false;
             int sw = GetScreenWidth();
             int sh = GetScreenHeight();
@@ -1024,60 +1293,43 @@ int main() {
 
             const float pad = 12.0f;
             const float footerH = 42.0f;
-            Rectangle contentClip = {panel.x + 1.0f, panel.y + 1.0f, panel.width - 2.0f, std::max(0.0f, panel.height - footerH - 2.0f)};
-
-            bool mouseOverPanel = CheckCollisionPointRec(GetMousePosition(), panel);
-            if (mouseOverPanel) {
-                float wheel = GetMouseWheelMove();
-                if (wheel != 0.0f) uiScroll += wheel * 28.0f;
-            }
-
-            if (uiScroll > 0.0f) uiScroll = 0.0f;
-
-            BeginScissorMode((int)contentClip.x, (int)contentClip.y, (int)contentClip.width, (int)contentClip.height);
-
+            
             float x = panel.x + pad;
-            float y = pad + uiScroll;
+            float y = pad;
             DrawText("Spawner", (int)x, (int)y, 22, RAYWHITE);
-            y += 34.0f;
-
-            DrawText("Spawn Mode", (int)x, (int)y, 18, RAYWHITE);
             y += 24.0f;
             {
-                Rectangle r1 = {x, y, panel.width - 24.0f, 24.0f};
-                if (uiRadio(r1, "Throw (Dynamic)", spawnMode == SpawnMode::Throw)) spawnMode = SpawnMode::Throw;
-                y += 28.0f;
-
-                Rectangle r2 = {x, y, panel.width - 24.0f, 24.0f};
-                if (uiRadio(r2, "Place (Dynamic)", spawnMode == SpawnMode::PlaceDynamic)) spawnMode = SpawnMode::PlaceDynamic;
-                y += 28.0f;
-
-                Rectangle r3 = {x, y, panel.width - 24.0f, 24.0f};
-                if (uiRadio(r3, "Place (Static)", spawnMode == SpawnMode::PlaceStatic)) spawnMode = SpawnMode::PlaceStatic;
+                std::vector<std::string> modes = {"Throw (Dynamic)", "Place (Dynamic)", "Place (Static)"};
+                int sel = (int)spawnMode;
+                Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
+                uiDropdown(100, r, modes, sel);
+                if (g_activeDropdownId == 100) {
+                    g_activeDropdownRect = r;
+                    g_activeDropdownItems = modes;
+                    g_activeDropdownSelection = (int*)&spawnMode;
+                }
                 y += 34.0f;
             }
 
             DrawText("Shape", (int)x, (int)y, 18, RAYWHITE);
             y += 24.0f;
-            auto shapeRadio = [&](SpawnShape s, const char* name) {
-                Rectangle r = {x, y, panel.width - 24.0f, 24.0f};
-                if (uiRadio(r, name, currentShape == s)) currentShape = s;
-                y += 28.0f;
-            };
-            shapeRadio(SpawnShape::Sphere, "Sphere");
-            shapeRadio(SpawnShape::Cube, "Cube");
-            shapeRadio(SpawnShape::Capsule, "Capsule");
-            shapeRadio(SpawnShape::Tetrahedron, "Tetrahedron");
-            shapeRadio(SpawnShape::Bipyramid, "Bipyramid");
-            shapeRadio(SpawnShape::Dodecahedron, "Dodecahedron");
-            shapeRadio(SpawnShape::Ramp, "Ramp");
-
-            y += 12.0f;
-            DrawText("Prefabs", (int)x, (int)y, 18, RAYWHITE);
-            y += 24.0f;
-            
-            static int chainLength = 5;
             {
+                std::vector<std::string> shapes = {
+                    "Sphere", "Cube", "Capsule", "Tetrahedron", 
+                    "Bipyramid", "Dodecahedron", "Ramp", "Torus", "Chain"
+                };
+                int sel = (int)currentShape;
+                Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
+                uiDropdown(101, r, shapes, sel);
+                if (g_activeDropdownId == 101) {
+                    g_activeDropdownRect = r;
+                    g_activeDropdownItems = shapes;
+                    g_activeDropdownSelection = (int*)&currentShape;
+                }
+                y += 34.0f;
+            }
+
+            if (currentShape == SpawnShape::Chain) {
                 DrawText("Chain Length", (int)x, (int)y, 16, Color{200, 200, 200, 255});
                 y += 18.0f;
                 bool changed = false;
@@ -1090,68 +1342,6 @@ int main() {
                 snprintf(buf, sizeof(buf), "%d", chainLength);
                 DrawText(buf, (int)x, (int)y, 14, Color{170, 170, 170, 255});
                 y += 22.0f;
-
-                Rectangle btn = {x, y, panel.width - 24.0f, 28.0f};
-                if (uiButton(btn, "Spawn Chain")) {
-                    Vec3 camPos = renderer.getCameraPosition();
-                    Vec3 camFwd = renderer.getCameraForward();
-                    
-                    Vec3 startPos;
-                    if (spawnMode == SpawnMode::Throw) {
-                        startPos = camPos + camFwd * 2.0f;
-                    } else {
-                        RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                        if (hit.hit) {
-                            startPos = hit.point + hit.normal * 0.1f;
-                            if (spawnMode == SpawnMode::PlaceStatic) {
-                                startPos += Vec3{0.0f, (float)chainLength * currentSize * 2.2f, 0.0f};
-                            }
-                        } else {
-                            startPos = camPos + camFwd * 5.0f;
-                        }
-                    }
-
-                    float radius = currentSize * 0.5f;
-                    float spacing = radius * 2.2f;
-                    RigidBody* prev = nullptr;
-
-                    for (int i = 0; i < chainLength; ++i) {
-                        RigidBody b;
-                        b.position = startPos + Vec3{0.0f, -i * spacing, 0.0f};
-                        b.collider = Collider::createSphere(radius);
-                        
-                        float density = std::max(1.0f, currentMaterial.density);
-                        float volume = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
-                        b.mass = std::max(0.05f, density * volume);
-                        
-                        b.restitution = currentMaterial.restitution;
-                        b.friction = currentMaterial.friction;
-                        
-                        if (spawnMode == SpawnMode::Throw) {
-                            b.velocity = camFwd * 10.0f;
-                        }
-
-                        if (i == 0 && spawnMode == SpawnMode::PlaceStatic) {
-                            b.isStatic = true;
-                        }
-
-                        dynamicBodies.push_back(b);
-                        RigidBody* curr = &dynamicBodies.back();
-                        physicsWorld.addRigidBody(curr);
-
-                        Renderer::RenderStyle st;
-                        st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
-                        st.outline = currentMaterial.outline;
-                        bodyStyles[curr] = st;
-
-                        if (prev) {
-                            Vec3 anchor = (prev->position + curr->position) * 0.5f;
-                            physicsWorld.addBallSocketJoint(prev, curr, anchor);
-                        }
-                        prev = curr;
-                    }
-                }
-                y += 34.0f;
             }
 
             y += 8.0f;
@@ -1172,22 +1362,50 @@ int main() {
             DrawText("Material", (int)x, (int)y, 18, RAYWHITE);
             y += 24.0f;
 
-            auto materialRadio = [&](const MaterialProps& m) {
-                bool sel = (!currentMaterialIsCustom && currentMaterial.name == m.name);
-                Rectangle r = {x, y, panel.width - 24.0f, 24.0f};
-                if (uiRadio(r, m.name.c_str(), sel)) {
-                    currentMaterial = m;
-                    currentMaterialIsCustom = false;
-                }
-                y += 28.0f;
-            };
-            for (const auto& m : presetMaterials) materialRadio(m);
             {
-                Rectangle r = {x, y, panel.width - 24.0f, 24.0f};
-                if (uiRadio(r, "Custom", currentMaterialIsCustom)) {
-                    currentMaterialIsCustom = true;
+                std::vector<std::string> matNames;
+                matNames.reserve(presetMaterials.size() + 1);
+                for (const auto& m : presetMaterials) matNames.push_back(m.name);
+                matNames.push_back("Custom");
+
+                int sel = currentMaterialIsCustom ? (int)presetMaterials.size() : -1;
+                if (!currentMaterialIsCustom) {
+                    for (int i = 0; i < (int)presetMaterials.size(); ++i) {
+                        if (presetMaterials[i].name == currentMaterial.name) {
+                            sel = i;
+                            break;
+                        }
+                    }
                 }
-                y += 32.0f;
+                if (sel == -1) sel = (int)presetMaterials.size(); // Default to custom if not found
+
+                Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
+                int oldSel = sel;
+                uiDropdown(102, r, matNames, sel);
+                if (g_activeDropdownId == 102) {
+                    g_activeDropdownRect = r;
+                    g_activeDropdownItems = matNames;
+                }
+                
+                static int matSelIndex = 0;
+                if (g_activeDropdownId != 102) {
+                    matSelIndex = sel;
+                }
+                
+                if (g_activeDropdownId == 102) {
+                    g_activeDropdownSelection = &matSelIndex;
+                }
+                
+                if (matSelIndex != sel) {
+                    if (matSelIndex >= 0 && matSelIndex < (int)presetMaterials.size()) {
+                        currentMaterial = presetMaterials[matSelIndex];
+                        currentMaterialIsCustom = false;
+                    } else {
+                        currentMaterialIsCustom = true;
+                    }
+                }
+                
+                y += 34.0f;
             }
 
             auto sliderRow = [&](int idBase, const char* label, float& v, float minV, float maxV, int precision) {
@@ -1217,22 +1435,46 @@ int main() {
             DrawText("Floor", (int)x, (int)y, 18, RAYWHITE);
             y += 24.0f;
 
-            auto floorMaterialRadio = [&](const MaterialProps& m) {
-                bool sel = (!floorMaterialIsCustom && floorMaterial.name == m.name);
-                Rectangle r = {x, y, panel.width - 24.0f, 24.0f};
-                if (uiRadio(r, m.name.c_str(), sel)) {
-                    floorMaterial = m;
-                    floorMaterialIsCustom = false;
-                }
-                y += 28.0f;
-            };
-            for (const auto& m : presetMaterials) floorMaterialRadio(m);
             {
-                Rectangle r = {x, y, panel.width - 24.0f, 24.0f};
-                if (uiRadio(r, "Custom", floorMaterialIsCustom)) {
-                    floorMaterialIsCustom = true;
+                std::vector<std::string> matNames;
+                matNames.reserve(presetMaterials.size() + 1);
+                for (const auto& m : presetMaterials) matNames.push_back(m.name);
+                matNames.push_back("Custom");
+
+                int sel = floorMaterialIsCustom ? (int)presetMaterials.size() : -1;
+                if (!floorMaterialIsCustom) {
+                    for (int i = 0; i < (int)presetMaterials.size(); ++i) {
+                        if (presetMaterials[i].name == floorMaterial.name) {
+                            sel = i;
+                            break;
+                        }
+                    }
                 }
-                y += 32.0f;
+                if (sel == -1) sel = (int)presetMaterials.size();
+
+                Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
+                
+                static int floorSelIndex = 0;
+                if (g_activeDropdownId != 103) {
+                    floorSelIndex = sel;
+                }
+                
+                uiDropdown(103, r, matNames, floorSelIndex);
+                if (g_activeDropdownId == 103) {
+                    g_activeDropdownRect = r;
+                    g_activeDropdownItems = matNames;
+                    g_activeDropdownSelection = &floorSelIndex;
+                }
+                
+                if (floorSelIndex != sel) {
+                    if (floorSelIndex >= 0 && floorSelIndex < (int)presetMaterials.size()) {
+                        floorMaterial = presetMaterials[floorSelIndex];
+                        floorMaterialIsCustom = false;
+                    } else {
+                        floorMaterialIsCustom = true;
+                    }
+                }
+                y += 34.0f;
             }
 
             auto floorSliderRow = [&](int idBase, const char* label, float& v, float minV, float maxV) {
@@ -1254,18 +1496,34 @@ int main() {
             floorSliderRow(1201, "Friction", floorMaterial.friction, 0.0f, 1.5f);
             floorSliderRow(1202, "Restitution", floorMaterial.restitution, 0.0f, 1.0f);
 
-            float contentBottomNoScroll = y - uiScroll;
-            float visibleH = panel.height - footerH - pad;
-            float contentH = contentBottomNoScroll - pad;
-            float minScroll = std::min(0.0f, visibleH - contentH);
-            uiScroll = std::clamp(uiScroll, minScroll, 0.0f);
-
-            EndScissorMode();
-
             Rectangle footer = {panel.x, panel.y + panel.height - footerH, panel.width, footerH};
             DrawRectangleRec(footer, Color{18, 18, 18, 245});
             DrawRectangleLinesEx(footer, 1.0f, Color{60, 60, 60, 255});
             DrawText("Q to Spawn", (int)(panel.x + pad), (int)(footer.y + 12.0f), 18, RAYWHITE);
+
+            if (g_activeDropdownId != -1 && g_activeDropdownSelection) {
+                int id = g_activeDropdownId;
+                bool changed = uiDrawDropdownOverlay(g_activeDropdownId, g_activeDropdownRect, g_activeDropdownItems, *g_activeDropdownSelection);
+                if (changed) {
+                    if (id == 102) {
+                        int idx = *g_activeDropdownSelection;
+                        if (idx >= 0 && idx < (int)presetMaterials.size()) {
+                            currentMaterial = presetMaterials[idx];
+                            currentMaterialIsCustom = false;
+                        } else {
+                            currentMaterialIsCustom = true;
+                        }
+                    } else if (id == 103) {
+                        int idx = *g_activeDropdownSelection;
+                        if (idx >= 0 && idx < (int)presetMaterials.size()) {
+                            floorMaterial = presetMaterials[idx];
+                            floorMaterialIsCustom = false;
+                        } else {
+                            floorMaterialIsCustom = true;
+                        }
+                    }
+                }
+            }
         }
 
         renderer.endFrame();

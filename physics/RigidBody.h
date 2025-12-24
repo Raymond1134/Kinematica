@@ -19,9 +19,14 @@ struct RigidBody {
     bool hadContactThisStep = false;
     int solverIndex = -1;
     
+    bool useExplicitInertia = false;
+    Vec3 explicitInvInertia = {0.0f, 0.0f, 0.0f};
+
     Vec3 getInvInertiaBody() const {
         if (isStatic) return {0.0f, 0.0f, 0.0f};
         if (mass <= 0.0001f) return {0.0f, 0.0f, 0.0f};
+        
+        if (useExplicitInertia) return explicitInvInertia;
 
         if (collider.type == ColliderType::Sphere) {
             float r = collider.sphere.radius;

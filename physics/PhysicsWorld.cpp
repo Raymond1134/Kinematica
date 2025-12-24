@@ -652,22 +652,32 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
         }
         case ColliderType::Compound: {
             if (!body->collider.compound) break;
+            
+            struct TempPoint { Vec3 p; float pen; };
+            std::vector<TempPoint> candidates;
+            candidates.reserve(64);
+
             for (const CompoundChild& child : body->collider.compound->children) {
                 Quat qChildWorld = (body->orientation * child.localOrientation).normalized();
                 Vec3 pChildWorld = body->orientation.rotate(child.localPosition) + body->position;
 
+                auto testV = [&](const Vec3& vWorld) {
+                    float pen = floorY - vWorld.y;
+                    if (pen > 0.0f) { candidates.push_back({vWorld, pen}); }
+                };
+
                 switch (child.collider.type) {
                     case ColliderType::Sphere: {
                         float r = child.collider.sphere.radius;
-                        testVertex(pChildWorld + Vec3{0, -r, 0});
+                        testV(pChildWorld + Vec3{0, -r, 0});
                         break;
                     }
                     case ColliderType::Capsule: {
                         float r = child.collider.capsule.radius;
                         float hh = child.collider.capsule.halfHeight;
                         Vec3 axis = qChildWorld.rotate({0.0f, 1.0f, 0.0f});
-                        testVertex(pChildWorld + axis * hh + Vec3{0, -r, 0});
-                        testVertex(pChildWorld - axis * hh + Vec3{0, -r, 0});
+                        testV(pChildWorld + axis * hh + Vec3{0, -r, 0});
+                        testV(pChildWorld - axis * hh + Vec3{0, -r, 0});
                         break;
                     }
                     case ColliderType::Box: {
@@ -676,7 +686,7 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
                             for (int dy = -1; dy <= 1; dy += 2) {
                                 for (int dz = -1; dz <= 1; dz += 2) {
                                     Vec3 local = {he.x * dx, he.y * dy, he.z * dz};
-                                    testVertex(qChildWorld.rotate(local) + pChildWorld);
+                                    testV(qChildWorld.rotate(local) + pChildWorld);
                                 }
                             }
                         }
@@ -685,7 +695,7 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
                     case ColliderType::Convex: {
                         if (child.collider.polyhedron) {
                             for (const Vec3& v : child.collider.polyhedron->verts) {
-                                testVertex(qChildWorld.rotate(v) + pChildWorld);
+                                testV(qChildWorld.rotate(v) + pChildWorld);
                             }
                         }
                         break;
@@ -698,6 +708,66 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
                         break;
                 }
             }
+
+            if (candidates.empty()) break;
+
+            int best = 0;
+            for (int i = 1; i < (int)candidates.size(); ++i) {
+                if (candidates[i].pen > candidates[best].pen) best = i;
+            }
+            addPoint({candidates[best].p.x, floorY, candidates[best].p.z}, candidates[best].pen);
+            candidates[best].pen = -1.0f;
+
+            if (m.count < 8) {
+                int best2 = -1;
+                float maxD2 = -1.0f;
+                for (int i = 0; i < (int)candidates.size(); ++i) {
+                    if (candidates[i].pen < 0.0f) continue;
+                    float d2 = (candidates[i].p - m.points[0].pointWorld).lengthSq();
+                    if (d2 > maxD2) { maxD2 = d2; best2 = i; }
+                }
+                if (best2 >= 0) {
+                    addPoint({candidates[best2].p.x, floorY, candidates[best2].p.z}, candidates[best2].pen);
+                    candidates[best2].pen = -1.0f;
+                }
+            }
+
+            if (m.count == 2 && m.count < 8) {
+                int best3 = -1;
+                float maxD2 = -1.0f;
+                Vec3 p1 = m.points[0].pointWorld;
+                Vec3 p2 = m.points[1].pointWorld;
+                Vec3 line = p2 - p1;
+                float lenSq = line.lengthSq();
+                for (int i = 0; i < (int)candidates.size(); ++i) {
+                    if (candidates[i].pen < 0.0f) continue;
+                    Vec3 p = candidates[i].p;
+                    float d2 = 0.0f;
+                    if (lenSq < 1e-8f) d2 = (p - p1).lengthSq();
+                    else {
+                        float t = Vec3::dot(p - p1, line) / lenSq;
+                        Vec3 proj = p1 + line * t;
+                        d2 = (p - proj).lengthSq();
+                    }
+                    if (d2 > maxD2) { maxD2 = d2; best3 = i; }
+                }
+                if (best3 >= 0) {
+                    addPoint({candidates[best3].p.x, floorY, candidates[best3].p.z}, candidates[best3].pen);
+                    candidates[best3].pen = -1.0f;
+                }
+            }
+
+            while (m.count < 8) {
+                int next = -1;
+                float maxPen = -1e30f;
+                for (int i = 0; i < (int)candidates.size(); ++i) {
+                    if (candidates[i].pen > maxPen) { maxPen = candidates[i].pen; next = i; }
+                }
+                if (next < 0 || maxPen <= 0.0f) break;
+                addPoint({candidates[next].p.x, floorY, candidates[next].p.z}, candidates[next].pen);
+                candidates[next].pen = -1.0f;
+            }
+
             break;
         }
         case ColliderType::Mesh: {
@@ -2411,9 +2481,12 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
 
                 ContactManifold mChild;
                 if (detectBodyBodyConvex(&pa, &pb, mChild, epaScratch)) {
+                    Vec3 paToPb = pb.position - pa.position;
+                    if (Vec3::dot(mChild.normal, paToPb) < 0.0f) {
+                        mChild.normal = -mChild.normal;
+                    }
                     mChild.a = a;
                     mChild.b = b;
-                    orientNormalForPair(mChild, a, b);
                     out.push_back(mChild);
                     if (++emitted >= maxManifoldsPerPair) return;
                 }
@@ -2423,41 +2496,74 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
     }
 
     if (aCompound) {
+        bool bIsMesh = (b->collider.type == ColliderType::Mesh);
         for (const CompoundChild& ca : a->collider.compound->children) {
             RigidBody pa = makeChildProxyBody(a, ca);
             float ra = ca.collider.boundingRadius();
-            float rb = b->collider.boundingRadius();
-            Vec3 d = b->position - pa.position;
-            float maxD = ra + rb + childBroadphaseMargin;
-            if (d.lengthSq() > maxD * maxD) continue;
 
-            ContactManifold mChild;
-            if (detectBodyBodyConvex(&pa, b, mChild, epaScratch)) {
-                mChild.a = a;
-                mChild.b = b;
-                orientNormalForPair(mChild, a, b);
-                out.push_back(mChild);
-                if (++emitted >= maxManifoldsPerPair) return;
+            if (bIsMesh) {
+                std::vector<ContactManifold> temp;
+                appendMeshConvexManifolds(b, &pa, temp, 4);
+                for (auto& m : temp) {
+                    m.a = a;
+                    m.b = b;
+                    m.normal = -m.normal;
+                    out.push_back(m);
+                    if (++emitted >= maxManifoldsPerPair) return;
+                }
+            } else {
+                float rb = b->collider.boundingRadius();
+                Vec3 d = b->position - pa.position;
+                float maxD = ra + rb + childBroadphaseMargin + 0.1f; // Increased margin
+                if (d.lengthSq() > maxD * maxD) continue;
+
+                ContactManifold mChild;
+                if (detectBodyBodyConvex(&pa, b, mChild, epaScratch)) {
+                    Vec3 paToB = b->position - pa.position;
+                    if (Vec3::dot(mChild.normal, paToB) < 0.0f) {
+                        mChild.normal = -mChild.normal;
+                    }
+                    mChild.a = a;
+                    mChild.b = b;
+                    out.push_back(mChild);
+                    if (++emitted >= maxManifoldsPerPair) return;
+                }
             }
         }
         return;
     }
 
+    bool aIsMesh = (a->collider.type == ColliderType::Mesh);
     for (const CompoundChild& cb : b->collider.compound->children) {
         RigidBody pb = makeChildProxyBody(b, cb);
-        float ra = a->collider.boundingRadius();
         float rb = cb.collider.boundingRadius();
-        Vec3 d = pb.position - a->position;
-        float maxD = ra + rb + childBroadphaseMargin;
-        if (d.lengthSq() > maxD * maxD) continue;
 
-        ContactManifold mChild;
-        if (detectBodyBodyConvex(a, &pb, mChild, epaScratch)) {
-            mChild.a = a;
-            mChild.b = b;
-            orientNormalForPair(mChild, a, b);
-            out.push_back(mChild);
-            if (++emitted >= maxManifoldsPerPair) return;
+        if (aIsMesh) {
+            std::vector<ContactManifold> temp;
+            appendMeshConvexManifolds(a, &pb, temp, 4);
+            for (auto& m : temp) {
+                m.a = a;
+                m.b = b;
+                out.push_back(m);
+                if (++emitted >= maxManifoldsPerPair) return;
+            }
+        } else {
+            float ra = a->collider.boundingRadius();
+            Vec3 d = pb.position - a->position;
+            float maxD = ra + rb + childBroadphaseMargin + 0.1f;
+            if (d.lengthSq() > maxD * maxD) continue;
+
+            ContactManifold mChild;
+            if (detectBodyBodyConvex(a, &pb, mChild, epaScratch)) {
+                Vec3 aToPb = pb.position - a->position;
+                if (Vec3::dot(mChild.normal, aToPb) < 0.0f) {
+                    mChild.normal = -mChild.normal;
+                }
+                mChild.a = a;
+                mChild.b = b;
+                out.push_back(mChild);
+                if (++emitted >= maxManifoldsPerPair) return;
+            }
         }
     }
 }

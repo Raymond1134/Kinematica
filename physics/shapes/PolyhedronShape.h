@@ -118,11 +118,44 @@ public:
             for (int i = (int)visible.size() - 1; i >= 0; --i) { tris.erase(tris.begin() + visible[i]); }
             for (const Edge& e : boundary) { tris.push_back({e.a, e.b, p}); }
         }
-		
-        for (const auto& t : tris) {
-            addEdgeUnique(t.a, t.b);
-            addEdgeUnique(t.b, t.c);
-            addEdgeUnique(t.c, t.a);
+
+        struct EdgeInfo {
+            int a, b;
+            int t1 = -1;
+            int t2 = -1;
+        };
+        std::vector<EdgeInfo> edgeInfos;
+        edgeInfos.reserve(tris.size() * 3);
+
+        auto addEdgeInfo = [&](int a, int b, int tIdx) {
+            if (a > b) std::swap(a, b);
+            for (auto& ei : edgeInfos) {
+                if (ei.a == a && ei.b == b) {
+                    if (ei.t1 == -1) ei.t1 = tIdx;
+                    else ei.t2 = tIdx;
+                    return;
+                }
+            }
+            edgeInfos.push_back({a, b, tIdx, -1});
+        };
+
+        for (int i = 0; i < (int)tris.size(); ++i) {
+            addEdgeInfo(tris[i].a, tris[i].b, i);
+            addEdgeInfo(tris[i].b, tris[i].c, i);
+            addEdgeInfo(tris[i].c, tris[i].a, i);
+        }
+
+        edges.clear();
+        for (const auto& ei : edgeInfos) {
+            if (ei.t1 != -1 && ei.t2 != -1) {
+                Vec3 n1 = faceNormal(verts[tris[ei.t1].a], verts[tris[ei.t1].b], verts[tris[ei.t1].c]).normalized();
+                Vec3 n2 = faceNormal(verts[tris[ei.t2].a], verts[tris[ei.t2].b], verts[tris[ei.t2].c]).normalized();
+                if (Vec3::dot(n1, n2) < 0.99f) {
+                    edges.push_back({ei.a, ei.b});
+                }
+            } else {
+                edges.push_back({ei.a, ei.b});
+            }
         }
     }
 };
