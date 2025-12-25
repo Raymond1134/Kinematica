@@ -15,9 +15,11 @@ struct RigidBody {
     Collider collider;
     bool isStatic = false;
     bool sleeping = false;
+    bool visible = true;
     float sleepTimer = 0.0f;
     bool hadContactThisStep = false;
     int solverIndex = -1;
+    int groupId = 0;
     
     bool useExplicitInertia = false;
     Vec3 explicitInvInertia = {0.0f, 0.0f, 0.0f};

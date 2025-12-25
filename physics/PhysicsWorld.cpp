@@ -25,6 +25,10 @@ void PhysicsWorld::addBallSocketJoint(RigidBody* a, RigidBody* b, const Vec3& an
     ballSocketJoints.push_back(j);
 }
 
+void PhysicsWorld::addSpring(RigidBody* a, RigidBody* b, float restLength, float stiffness, float damping) {
+    springs.emplace_back(a, b, restLength, stiffness, damping);
+}
+
 void PhysicsWorld::addHingeJoint(RigidBody* a, RigidBody* b, const Vec3& anchorWorld, const Vec3& axisWorld) {
     HingeJoint j;
     j.a = a;
@@ -111,7 +115,10 @@ int PhysicsWorld::computeCcdSubsteps(float deltaTime) const {
 void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
     using clock = std::chrono::steady_clock;
 
-    for (const Spring& spring : springs) {
+    const int nSprings = (int)springs.size();
+    #pragma omp parallel for schedule(static) if(nSprings > 64)
+    for (int i = 0; i < nSprings; ++i) {
+        const Spring& spring = springs[i];
         if (!spring.a || !spring.b) continue;
         Vec3 delta = spring.b->position - spring.a->position;
         float dist = delta.length();
@@ -121,8 +128,25 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
         float relVel = Vec3::dot(spring.b->velocity - spring.a->velocity, dir);
         float forceMag = spring.stiffness * displacement - spring.damping * relVel;
         Vec3 force = dir * forceMag;
-        if (!spring.a->isStatic && spring.a->mass > 0.0f) spring.a->velocity -= force * (deltaTime / spring.a->mass);
-        if (!spring.b->isStatic && spring.b->mass > 0.0f) spring.b->velocity += force * (deltaTime / spring.b->mass);
+        
+        if (!spring.a->isStatic && spring.a->mass > 0.0f) {
+            Vec3 dv = force * (deltaTime / spring.a->mass);
+            #pragma omp atomic
+            spring.a->velocity.x -= dv.x;
+            #pragma omp atomic
+            spring.a->velocity.y -= dv.y;
+            #pragma omp atomic
+            spring.a->velocity.z -= dv.z;
+        }
+        if (!spring.b->isStatic && spring.b->mass > 0.0f) {
+            Vec3 dv = force * (deltaTime / spring.b->mass);
+            #pragma omp atomic
+            spring.b->velocity.x += dv.x;
+            #pragma omp atomic
+            spring.b->velocity.y += dv.y;
+            #pragma omp atomic
+            spring.b->velocity.z += dv.z;
+        }
     }
     currentDt = deltaTime;
 
@@ -641,6 +665,7 @@ void PhysicsWorld::buildSapCandidates() {
             if (bi == bj) continue;
             if (bi->isStatic && bj->isStatic) continue;
             if (bi->sleeping && bj->sleeping) continue;
+            if (bi->groupId != 0 && bi->groupId == bj->groupId) continue;
 
             if (cur.maxY < other.minY || cur.minY > other.maxY) continue;
             if (cur.maxZ < other.minZ || cur.minZ > other.maxZ) continue;

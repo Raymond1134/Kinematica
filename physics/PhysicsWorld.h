@@ -90,6 +90,7 @@ public:
     std::unordered_set<BodyPair, BodyPairHash> ignoredPairs;
     void updateIgnoredPairs();
 
+    void addSpring(RigidBody* a, RigidBody* b, float restLength, float stiffness, float damping);
     void addBallSocketJoint(RigidBody* a, RigidBody* b, const Vec3& anchorWorld);
     void addHingeJoint(RigidBody* a, RigidBody* b, const Vec3& anchorWorld, const Vec3& axisWorld);
     void addRigidBody(RigidBody* body);

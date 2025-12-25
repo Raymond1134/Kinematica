@@ -30,6 +30,128 @@ struct MaterialProps {
     bool outline = false;
 };
 
+struct Cloth {
+    std::vector<RigidBody*> particles;
+    int rows = 0;
+    int cols = 0;
+    Mesh mesh = { 0 };
+    Model model = { 0 };
+    Color color = WHITE;
+
+    void init(int r, int c, Color col) {
+        rows = r;
+        cols = c;
+        color = col;
+
+        mesh = { 0 };
+        mesh.vertexCount = rows * cols;
+        mesh.triangleCount = (rows - 1) * (cols - 1) * 4;
+
+        mesh.vertices = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+        mesh.normals = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+        mesh.texcoords = (float*)MemAlloc(mesh.vertexCount * 2 * sizeof(float));
+        mesh.indices = (unsigned short*)MemAlloc(mesh.triangleCount * 3 * sizeof(unsigned short));
+
+        int k = 0;
+        for (int i = 0; i < rows - 1; i++) {
+            for (int j = 0; j < cols - 1; j++) {
+                int nextRow = i + 1;
+                int nextCol = j + 1;
+
+                int idx0 = i * cols + j;
+                int idx1 = nextRow * cols + j;
+                int idx2 = nextRow * cols + nextCol;
+                int idx3 = i * cols + nextCol;
+
+                mesh.indices[k++] = idx0;
+                mesh.indices[k++] = idx1;
+                mesh.indices[k++] = idx2;
+
+                mesh.indices[k++] = idx0;
+                mesh.indices[k++] = idx2;
+                mesh.indices[k++] = idx3;
+
+                mesh.indices[k++] = idx0;
+                mesh.indices[k++] = idx2;
+                mesh.indices[k++] = idx1;
+
+                mesh.indices[k++] = idx0;
+                mesh.indices[k++] = idx3;
+                mesh.indices[k++] = idx2;
+            }
+        }
+
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                mesh.texcoords[(i * cols + j) * 2] = (float)j / (cols - 1);
+                mesh.texcoords[(i * cols + j) * 2 + 1] = (float)i / (rows - 1);
+                
+                mesh.vertices[(i * cols + j) * 3] = 0;
+                mesh.vertices[(i * cols + j) * 3 + 1] = 0;
+                mesh.vertices[(i * cols + j) * 3 + 2] = 0;
+                
+                mesh.normals[(i * cols + j) * 3] = 0;
+                mesh.normals[(i * cols + j) * 3 + 1] = 1;
+                mesh.normals[(i * cols + j) * 3 + 2] = 0;
+            }
+        }
+
+        UploadMesh(&mesh, true);
+        model = LoadModelFromMesh(mesh);
+    }
+
+    void update() {
+        if (particles.empty()) return;
+
+        for (int i = 0; i < rows * cols; i++) {
+            if (particles[i]) {
+                mesh.vertices[i * 3] = particles[i]->position.x;
+                mesh.vertices[i * 3 + 1] = particles[i]->position.y;
+                mesh.vertices[i * 3 + 2] = particles[i]->position.z;
+            }
+        }
+
+        memset(mesh.normals, 0, mesh.vertexCount * 3 * sizeof(float));
+
+        for (int i = 0; i < mesh.triangleCount; i++) {
+            int idx1 = mesh.indices[i * 3];
+            int idx2 = mesh.indices[i * 3 + 1];
+            int idx3 = mesh.indices[i * 3 + 2];
+
+            Vec3 v1 = { mesh.vertices[idx1 * 3], mesh.vertices[idx1 * 3 + 1], mesh.vertices[idx1 * 3 + 2] };
+            Vec3 v2 = { mesh.vertices[idx2 * 3], mesh.vertices[idx2 * 3 + 1], mesh.vertices[idx2 * 3 + 2] };
+            Vec3 v3 = { mesh.vertices[idx3 * 3], mesh.vertices[idx3 * 3 + 1], mesh.vertices[idx3 * 3 + 2] };
+
+            Vec3 normal = Vec3::cross(v2 - v1, v3 - v1).normalized();
+
+            mesh.normals[idx1 * 3] += normal.x; mesh.normals[idx1 * 3 + 1] += normal.y; mesh.normals[idx1 * 3 + 2] += normal.z;
+            mesh.normals[idx2 * 3] += normal.x; mesh.normals[idx2 * 3 + 1] += normal.y; mesh.normals[idx2 * 3 + 2] += normal.z;
+            mesh.normals[idx3 * 3] += normal.x; mesh.normals[idx3 * 3 + 1] += normal.y; mesh.normals[idx3 * 3 + 2] += normal.z;
+        }
+
+        for (int i = 0; i < mesh.vertexCount; i++) {
+            float nx = mesh.normals[i * 3];
+            float ny = mesh.normals[i * 3 + 1];
+            float nz = mesh.normals[i * 3 + 2];
+            float len = sqrtf(nx * nx + ny * ny + nz * nz);
+            if (len > 1e-6f) {
+                mesh.normals[i * 3] /= len;
+                mesh.normals[i * 3 + 1] /= len;
+                mesh.normals[i * 3 + 2] /= len;
+            }
+        }
+
+        UpdateMeshBuffer(mesh, 0, mesh.vertices, mesh.vertexCount * 3 * sizeof(float), 0);
+        UpdateMeshBuffer(mesh, 2, mesh.normals, mesh.vertexCount * 3 * sizeof(float), 0);
+    }
+
+    void draw() {
+        model.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = color;
+        DrawModel(model, { 0,0,0 }, 1.0f, WHITE);
+        DrawModelWires(model, { 0,0,0 }, 1.0f, ColorBrightness(color, -0.3f));
+    }
+};
+
 static bool jsonFindBool(const std::string& json, const char* key, bool& out) {
     std::string k = std::string("\"") + key + "\"";
     size_t p = json.find(k);
@@ -253,6 +375,7 @@ enum class SpawnShape {
     Torus,
     Chain,
     Car,
+    Cloth,
 };
 
 enum class SpawnMode {
@@ -699,6 +822,7 @@ int main() {
     
     PhysicsWorld physicsWorld;
     std::list<RigidBody> dynamicBodies;
+    std::vector<Cloth> cloths;
     std::unordered_map<const RigidBody*, Renderer::RenderStyle> bodyStyles;
     static std::unordered_map<int, std::shared_ptr<TriangleMesh>> torusRenderCache;
 
@@ -972,6 +1096,100 @@ int main() {
                 st.color.a = (unsigned char)(currentMaterial.opacity * 255.0f);
                 st.outline = currentMaterial.outline;
                 bodyStyles[chassisPtr] = st;
+            } else if (currentShape == SpawnShape::Cloth) {
+                Vec3 startPos;
+                if (spawnMode == SpawnMode::Throw) {
+                    startPos = camPos + camFwd * 3.0f;
+                } else {
+                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    if (hit.hit) {
+                        startPos = hit.point + hit.normal * 1.0f;
+                    } else {
+                        startPos = camPos + camFwd * 5.0f;
+                    }
+                }
+
+                int rows = 14;
+                int cols = 14;
+                float spacing = 0.2f * std::clamp(currentSize, 0.5f, 2.0f);
+                float radius = spacing * 0.6f;
+                float stiffness = 800.0f;
+                float damping = 2.0f;
+                
+                Cloth cloth;
+                cloth.init(rows, cols, currentMaterial.color);
+                cloth.particles.reserve(rows * cols);
+
+                static int nextGroupId = 1;
+                int clothGroupId = nextGroupId++;
+
+                for (int i = 0; i < rows; ++i) {
+                    for (int j = 0; j < cols; ++j) {
+                        RigidBody p;
+                        p.position = startPos + Vec3{(float)(j - cols/2) * spacing, 0.0f, (float)(i - rows/2) * spacing};
+                        p.velocity = {0.0f, 0.0f, 0.0f};
+                        p.orientation = Quat::identity();
+                        p.angularVelocity = {0.0f, 0.0f, 0.0f};
+                        p.collider = Collider::createSphere(radius);
+                        
+                        float vol = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
+                        p.mass = vol * currentMaterial.density;
+                        p.friction = currentMaterial.friction;
+                        p.restitution = currentMaterial.restitution;
+                        p.visible = false;
+                        p.groupId = clothGroupId;
+                        
+                        if (spawnMode == SpawnMode::Throw) {
+                            p.velocity = camFwd * 10.0f;
+                        }
+
+                        if (spawnMode == SpawnMode::PlaceStatic && i == 0) {
+                             p.isStatic = true;
+                             p.mass = 0.0f;
+                        }
+
+                        dynamicBodies.push_back(p);
+                        RigidBody* ptr = &dynamicBodies.back();
+                        physicsWorld.addRigidBody(ptr);
+                        cloth.particles.push_back(ptr);
+                    }
+                }
+
+                for (int i = 0; i < rows; ++i) {
+                    for (int j = 0; j < cols; ++j) {
+                        RigidBody* a = cloth.particles[i * cols + j];
+
+                        if (j + 1 < cols) {
+                            RigidBody* b = cloth.particles[i * cols + (j + 1)];
+                            physicsWorld.addSpring(a, b, spacing, stiffness, damping);
+                        }
+                        if (i + 1 < rows) {
+                            RigidBody* b = cloth.particles[(i + 1) * cols + j];
+                            physicsWorld.addSpring(a, b, spacing, stiffness, damping);
+                        }
+                        
+                        if (i + 1 < rows && j + 1 < cols) {
+                            RigidBody* b = cloth.particles[(i + 1) * cols + (j + 1)];
+                            float diag = spacing * 1.4142f;
+                            physicsWorld.addSpring(a, b, diag, stiffness, damping);
+                        }
+                        if (i + 1 < rows && j - 1 >= 0) {
+                            RigidBody* b = cloth.particles[(i + 1) * cols + (j - 1)];
+                            float diag = spacing * 1.4142f;
+                            physicsWorld.addSpring(a, b, diag, stiffness, damping);
+                        }
+                        
+                        if (j + 2 < cols) {
+                            RigidBody* b = cloth.particles[i * cols + (j + 2)];
+                            physicsWorld.addSpring(a, b, spacing * 2.0f, stiffness, damping);
+                        }
+                        if (i + 2 < rows) {
+                            RigidBody* b = cloth.particles[(i + 2) * cols + j];
+                            physicsWorld.addSpring(a, b, spacing * 2.0f, stiffness, damping);
+                        }
+                    }
+                }
+                cloths.push_back(cloth);
             } else {
                 RigidBody b;
                 b.position = camPos + camFwd * 2.0f;
@@ -1283,6 +1501,7 @@ int main() {
             transparent.reserve(dynamicBodies.size());
 
             for (auto& body : dynamicBodies) {
+                if (!body.visible) continue;
                 Renderer::RenderStyle st = getStyle(&body);
                 if (st.color.a < 255) transparent.push_back(&body);
                 else opaque.push_back(&body);
@@ -1299,6 +1518,11 @@ int main() {
             });
             for (const RigidBody* rb : transparent) {
                 renderer.drawRigidBody(rb, getStyle(rb));
+            }
+
+            for (auto& cloth : cloths) {
+                cloth.update();
+                cloth.draw();
             }
 
             if (spawnMode != SpawnMode::Throw) {
@@ -1418,6 +1642,12 @@ int main() {
                             ghost.orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw).normalized();
                             break;
                         }
+                        case SpawnShape::Cloth: {
+                            float spacing = 0.3f * std::clamp(currentSize, 0.5f, 2.0f);
+                            float dim = 9.0f * spacing;
+                            ghost.collider = Collider::createBox({dim * 0.5f, 0.1f, dim * 0.5f});
+                            break;
+                        }
                     }
 
                     float offset = placementOffsetAlongNormal(ghost.collider, ghost.orientation, placeNormal);
@@ -1478,7 +1708,7 @@ int main() {
             {
                 std::vector<std::string> shapes = {
                     "Sphere", "Cube", "Capsule", "Tetrahedron", 
-                    "Bipyramid", "Dodecahedron", "Ramp", "Torus", "Chain", "Car"
+                    "Bipyramid", "Dodecahedron", "Ramp", "Torus", "Chain", "Car", "Cloth"
                 };
                 int sel = (int)currentShape;
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
