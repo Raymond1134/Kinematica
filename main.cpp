@@ -17,6 +17,8 @@
 #include <vector>
 #include <unordered_map>
 
+static RigidBody* g_carBody = nullptr;
+
 struct MaterialProps {
     std::string name;
     float density = 1.0f;
@@ -250,6 +252,7 @@ enum class SpawnShape {
     Ramp,
     Torus,
     Chain,
+    Car,
 };
 
 enum class SpawnMode {
@@ -712,6 +715,16 @@ int main() {
     MaterialProps floorMaterial = presetMaterials.empty() ? customTemplate : presetMaterials[0];
     bool floorMaterialIsCustom = presetMaterials.empty();
 
+    for (const auto& m : presetMaterials) {
+        if (m.name == "Plastic") {
+            currentMaterial = m;
+            floorMaterial = m;
+            currentMaterialIsCustom = false;
+            floorMaterialIsCustom = false;
+            break;
+        }
+    }
+
     SpawnShape currentShape = SpawnShape::Cube;
     static int chainLength = 5;
     float currentSize = 0.35f;
@@ -878,6 +891,87 @@ int main() {
                     }
                     prev = curr;
                 }
+            } else if (currentShape == SpawnShape::Car) {
+                Vec3 startPos;
+                if (spawnMode == SpawnMode::Throw) {
+                    startPos = camPos + camFwd * 2.0f;
+                } else {
+                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    if (hit.hit) {
+                        startPos = hit.point + hit.normal * 0.5f;
+                    } else {
+                        startPos = camPos + camFwd * 5.0f;
+                    }
+                }
+
+                RigidBody chassis{};
+                chassis.position = startPos;
+                chassis.velocity = {0.0f, 0.0f, 0.0f};
+                chassis.angularVelocity = {0.0f, 0.0f, 0.0f};
+                chassis.orientation = Quat::identity();
+
+                Vec3 chassisDim = {1.0f, 0.25f, 2.0f};
+                float wheelRadius = 0.3f;
+                Vec3 wheelOffsets[4] = {
+                    {-0.6f, -0.1f, -0.7f},
+                    { 0.6f, -0.1f, -0.7f},
+                    {-0.6f, -0.1f,  0.7f},
+                    { 0.6f, -0.1f,  0.7f}
+                };
+
+                std::vector<CompoundChild> carChildren;
+                carChildren.reserve(5);
+                {
+                    CompoundChild body;
+                    body.collider = Collider::createBox(chassisDim * 0.5f);
+                    body.localPosition = {0.0f, 0.0f, 0.0f};
+                    body.localOrientation = Quat::identity();
+                    carChildren.push_back(body);
+                }
+                for (int i = 0; i < 4; ++i) {
+                    CompoundChild w;
+                    w.collider = Collider::createSphere(wheelRadius);
+                    w.localPosition = wheelOffsets[i];
+                    w.localOrientation = Quat::identity();
+                    carChildren.push_back(w);
+                }
+
+                chassis.collider = Collider::createCompound(carChildren);
+                
+                float chassisVol = chassisDim.x * chassisDim.y * chassisDim.z;
+                float wheelVol = (4.0f / 3.0f) * 3.14159f * wheelRadius * wheelRadius * wheelRadius;
+                float totalVol = chassisVol + 4.0f * wheelVol;
+                chassis.mass = totalVol * currentMaterial.density;
+                
+                chassis.restitution = currentMaterial.restitution;
+                chassis.friction = currentMaterial.friction;
+                
+                if (spawnMode == SpawnMode::PlaceStatic) {
+                    chassis.isStatic = true;
+                    chassis.mass = 0.0f;
+                }
+
+                if (spawnMode != SpawnMode::Throw) {
+                    Vec3 f = {camFwd.x, 0.0f, camFwd.z};
+                    if (f.lengthSq() > 1e-8f) {
+                        f = f.normalized();
+                        float yaw = atan2f(f.x, f.z);
+                        chassis.orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw);
+                    }
+                }
+
+                dynamicBodies.push_back(chassis);
+                RigidBody* chassisPtr = &dynamicBodies.back();
+                physicsWorld.addRigidBody(chassisPtr);
+                
+                g_carBody = chassisPtr;
+                printf("Car spawned at (%.2f, %.2f, %.2f)\n", chassisPtr->position.x, chassisPtr->position.y, chassisPtr->position.z);
+                
+                Renderer::RenderStyle st;
+                st.color = currentMaterial.color;
+                st.color.a = (unsigned char)(currentMaterial.opacity * 255.0f);
+                st.outline = currentMaterial.outline;
+                bodyStyles[chassisPtr] = st;
             } else {
                 RigidBody b;
                 b.position = camPos + camFwd * 2.0f;
@@ -1091,6 +1185,75 @@ int main() {
             }
         }
 
+        // Car Controls
+        if (g_carBody && !g_carBody->isStatic) {
+            const float accelForce = 60.0f;
+            const float turnSpeed = 4.5f;
+            const float lateralFriction = 8.0f;
+            const float maxSpeed = 40.0f;
+
+            Vec3 fwd = g_carBody->orientation.rotate({0.0f, 0.0f, 1.0f});
+            Vec3 right = g_carBody->orientation.rotate({1.0f, 0.0f, 0.0f});
+
+            float currentSpeed = Vec3::dot(g_carBody->velocity, fwd);
+            if (IsKeyDown(KEY_UP)) {
+                if (currentSpeed < maxSpeed) {
+                    g_carBody->velocity += fwd * (accelForce * FIXED_DT);
+                }
+                g_carBody->sleeping = false;
+            }
+            if (IsKeyDown(KEY_DOWN)) {
+                if (currentSpeed > -maxSpeed) {
+                    g_carBody->velocity -= fwd * (accelForce * FIXED_DT);
+                }
+                g_carBody->sleeping = false;
+            }
+
+            float speed = g_carBody->velocity.length();
+            if (speed > 0.5f) {
+                float dir = Vec3::dot(g_carBody->velocity, fwd) > 0.0f ? 1.0f : -1.0f;
+                float turnFactor = std::min(speed / 10.0f, 1.0f); 
+                
+                if (IsKeyDown(KEY_LEFT)) {
+                    g_carBody->angularVelocity.y += turnSpeed * dir * turnFactor * FIXED_DT;
+                    g_carBody->sleeping = false;
+                }
+                if (IsKeyDown(KEY_RIGHT)) {
+                    g_carBody->angularVelocity.y -= turnSpeed * dir * turnFactor * FIXED_DT;
+                    g_carBody->sleeping = false;
+                }
+            }
+            Vec3 latVel = right * Vec3::dot(g_carBody->velocity, right);
+            g_carBody->velocity -= latVel * (lateralFriction * FIXED_DT);
+
+            if (g_carBody->collider.compound) {
+                float wheelRadius = 0.3f;
+                float dist = Vec3::dot(g_carBody->velocity, fwd) * FIXED_DT;
+                float angleDelta = dist / wheelRadius;
+                
+                for (size_t i = 1; i < g_carBody->collider.compound->children.size(); ++i) {
+                    if (i > 4) break;
+                    CompoundChild& wheel = g_carBody->collider.compound->children[i];
+                    Quat rot = Quat::fromAxisAngle({1.0f, 0.0f, 0.0f}, angleDelta);
+                    wheel.localOrientation = (wheel.localOrientation * rot).normalized();
+                }
+            }
+        }
+
+        float hingeMotorSpeed = 0.0f;
+        if (IsKeyDown(KEY_UP)) hingeMotorSpeed = 15.0f;
+        if (IsKeyDown(KEY_DOWN)) hingeMotorSpeed = -15.0f;
+        
+        for (auto& j : physicsWorld.hingeJoints) {
+            if (j.enableMotor) {
+                j.motorTargetVelocity = hingeMotorSpeed;
+                if (hingeMotorSpeed != 0.0f) {
+                    if (j.a) j.a->sleeping = false;
+                    if (j.b) j.b->sleeping = false;
+                }
+            }
+        }
+
         int substeps = 0;
         while (accumulator >= FIXED_DT && substeps < MAX_SUBSTEPS) {
             physicsWorld.step(FIXED_DT);
@@ -1220,6 +1383,41 @@ int main() {
                             ghost.orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw).normalized();
                             break;
                         }
+                        case SpawnShape::Car: {
+                            Vec3 chassisDim = {1.0f, 0.25f, 2.0f};
+                            float wheelRadius = 0.3f;
+                            Vec3 wheelOffsets[4] = {
+                                {-0.6f, -0.1f, -0.7f},
+                                { 0.6f, -0.1f, -0.7f},
+                                {-0.6f, -0.1f,  0.7f},
+                                { 0.6f, -0.1f,  0.7f}
+                            };
+
+                            std::vector<CompoundChild> carChildren;
+                            carChildren.reserve(5);
+                            {
+                                CompoundChild body;
+                                body.collider = Collider::createBox(chassisDim * 0.5f);
+                                body.localPosition = {0.0f, 0.0f, 0.0f};
+                                body.localOrientation = Quat::identity();
+                                carChildren.push_back(body);
+                            }
+                            for (int i = 0; i < 4; ++i) {
+                                CompoundChild w;
+                                w.collider = Collider::createSphere(wheelRadius);
+                                w.localPosition = wheelOffsets[i];
+                                w.localOrientation = Quat::identity();
+                                carChildren.push_back(w);
+                            }
+                            ghost.collider = Collider::createCompound(carChildren);
+                            
+                            Vec3 f = {camFwd.x, 0.0f, camFwd.z};
+                            if (f.lengthSq() < 1e-8f) f = {0.0f, 0.0f, 1.0f};
+                            f = f.normalized();
+                            float yaw = atan2f(f.x, f.z);
+                            ghost.orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw).normalized();
+                            break;
+                        }
                     }
 
                     float offset = placementOffsetAlongNormal(ghost.collider, ghost.orientation, placeNormal);
@@ -1280,7 +1478,7 @@ int main() {
             {
                 std::vector<std::string> shapes = {
                     "Sphere", "Cube", "Capsule", "Tetrahedron", 
-                    "Bipyramid", "Dodecahedron", "Ramp", "Torus", "Chain"
+                    "Bipyramid", "Dodecahedron", "Ramp", "Torus", "Chain", "Car"
                 };
                 int sel = (int)currentShape;
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};

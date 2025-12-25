@@ -10,6 +10,7 @@
 #include <cmath>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
 #include <chrono>
 
@@ -44,6 +45,7 @@ public:
     Vec3 gravity = {0.0f, -9.81f, 0.0f};
     std::vector<Spring> springs;
     std::vector<BallSocketJoint> ballSocketJoints;
+    std::vector<HingeJoint> hingeJoints;
 
     // Ground plane at y=floorY. This is intentionally a dedicated plane contact.
     float floorY = 0.0f;
@@ -72,7 +74,24 @@ public:
     float restingMaxBodySpeed = 0.60f;
     float restingMaxBodyAngularSpeed = 2.50f;
 
+    struct BodyPair {
+        RigidBody* a;
+        RigidBody* b;
+        bool operator==(const BodyPair& o) const { return a == o.a && b == o.b; }
+    };
+    struct BodyPairHash {
+        size_t operator()(const BodyPair& k) const {
+            size_t h = 17;
+            h = h * 31 + (size_t)k.a;
+            h = h * 31 + (size_t)k.b;
+            return h;
+        }
+    };
+    std::unordered_set<BodyPair, BodyPairHash> ignoredPairs;
+    void updateIgnoredPairs();
+
     void addBallSocketJoint(RigidBody* a, RigidBody* b, const Vec3& anchorWorld);
+    void addHingeJoint(RigidBody* a, RigidBody* b, const Vec3& anchorWorld, const Vec3& axisWorld);
     void addRigidBody(RigidBody* body);
     void step(float deltaTime);
 
@@ -213,6 +232,7 @@ public:
     void solveRestingFriction(std::vector<ContactManifold>& ms, int passes);
     void solveRestingFriction(const std::vector<ContactManifold*>& ms, int passes);
     void solveJoints(const std::vector<BallSocketJoint*>& joints, float dt, bool isFirst);
+    void solveHingeJoints(const std::vector<HingeJoint*>& joints, float dt, bool isFirst);
     void solveIslands(std::vector<ContactManifold>& contacts);
 
     static RigidBody makeChildProxyBody(const RigidBody* parent, const CompoundChild& child);
@@ -227,6 +247,7 @@ public:
 private:
     std::vector<std::vector<ContactManifold*>> islandBuffer;
     std::vector<std::vector<BallSocketJoint*>> islandJointsBuffer;
+    std::vector<std::vector<HingeJoint*>> islandHingeJointsBuffer;
     std::vector<int> islandParentBuffer;
     std::vector<int> islandRootToIdBuffer;
 

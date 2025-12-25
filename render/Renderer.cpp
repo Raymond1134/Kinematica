@@ -236,7 +236,7 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
         }
     };
 
-    auto drawColliderAtOrigin = [&](const Collider& c, bool allowOutline) {
+    auto drawColliderAtOrigin = [&](const Collider& c, bool allowOutline, Matrix currentTransform) {
         switch (c.type) {
             case ColliderType::Sphere: {
                 float radius = c.sphere.radius;
@@ -247,11 +247,7 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
                 } else {
                     Matrix mat = MatrixIdentity();
                     mat = MatrixMultiply(MatrixScale(radius, radius, radius), mat);
-
-                    Matrix curMat;
-                    curMat = rlGetMatrixModelview();
-
-                    mat = MatrixMultiply(mat, curMat);
+                    mat = MatrixMultiply(mat, currentTransform);
                     
                     unsigned int cInt = (color.r << 24) | (color.g << 16) | (color.b << 8) | color.a;
                     sphereInstances[cInt].push_back(mat);
@@ -272,10 +268,7 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
                 } else {
                     Matrix mat = MatrixIdentity();
                     mat = MatrixMultiply(MatrixScale(boxSize.x, boxSize.y, boxSize.z), mat);
-                    Matrix curMat;
-                    curMat = rlGetMatrixModelview();
-
-                    mat = MatrixMultiply(mat, curMat);
+                    mat = MatrixMultiply(mat, currentTransform);
 
                     unsigned int cInt = (color.r << 24) | (color.g << 16) | (color.b << 8) | color.a;
                     cubeInstances[cInt].push_back(mat);
@@ -313,6 +306,10 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
     rlTranslatef(pos.x, pos.y, pos.z);
     applyQuat(body->orientation);
 
+    Matrix matTrans = MatrixTranslate(pos.x, pos.y, pos.z);
+    Matrix matRot = QuaternionToMatrix(Quaternion{body->orientation.x, body->orientation.y, body->orientation.z, body->orientation.w});
+    Matrix bodyTransform = MatrixMultiply(matTrans, matRot);
+
     if (style.meshOverride) {
         drawTriangleMeshAtOrigin(*style.meshOverride, true);
         rlPopMatrix();
@@ -330,18 +327,27 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
             if (body->collider.compound) {
                 const int childCount = (int)body->collider.compound->children.size();
                 const bool suppressChildOutline = (childCount >= 12);
+
                 for (const CompoundChild& child : body->collider.compound->children) {
                     rlPushMatrix();
+                    
                     rlTranslatef(child.localPosition.x, child.localPosition.y, child.localPosition.z);
                     applyQuat(child.localOrientation);
-                    drawColliderAtOrigin(child.collider, !suppressChildOutline);
+
+                    Matrix childTrans = MatrixTranslate(child.localPosition.x, child.localPosition.y, child.localPosition.z);
+                    Matrix childRot = QuaternionToMatrix(Quaternion{child.localOrientation.x, child.localOrientation.y, child.localOrientation.z, child.localOrientation.w});
+                    Matrix childLocal = MatrixMultiply(childTrans, childRot);
+                    Matrix childWorld = MatrixMultiply(childLocal, bodyTransform);
+
+                    drawColliderAtOrigin(child.collider, !suppressChildOutline, childWorld);
+                    
                     rlPopMatrix();
                 }
             }
             break;
         }
         default:
-            drawColliderAtOrigin(body->collider, true);
+            drawColliderAtOrigin(body->collider, true, bodyTransform);
             break;
     }
 
