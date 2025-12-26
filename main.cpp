@@ -6,6 +6,8 @@
 #include "ui_dropdown.h"
 #include <chrono>
 #include <raylib.h>
+#include <raymath.h>
+#include <rlgl.h>
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -16,8 +18,10 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <cstring>
 
 static RigidBody* g_carBody = nullptr;
+static int g_activeBlobIndex = -1;
 
 struct MaterialProps {
     std::string name;
@@ -30,10 +34,12 @@ struct MaterialProps {
     bool outline = false;
 };
 
-struct Cloth {
+struct SoftBody {
     std::vector<RigidBody*> particles;
     int rows = 0;
     int cols = 0;
+    int layers = 0;
+    bool isBlob = false;
     Mesh mesh = { 0 };
     Model model = { 0 };
     Color color = WHITE;
@@ -41,6 +47,8 @@ struct Cloth {
     void init(int r, int c, Color col) {
         rows = r;
         cols = c;
+        layers = 1;
+        isBlob = false;
         color = col;
 
         mesh = { 0 };
@@ -100,19 +108,90 @@ struct Cloth {
         model = LoadModelFromMesh(mesh);
     }
 
+    void initBlob(int r, int c, int l, Color col) {
+        rows = r;
+        cols = c;
+        layers = l;
+        isBlob = true;
+        color = col;
+        
+        mesh = { 0 };
+        mesh.vertexCount = rows * cols * layers;
+        
+        int hullQuads = 2 * ((rows-1)*(cols-1) + (rows-1)*(layers-1) + (cols-1)*(layers-1));
+        mesh.triangleCount = hullQuads * 4;
+
+        mesh.vertices = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+        mesh.normals = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+        mesh.texcoords = (float*)MemAlloc(mesh.vertexCount * 2 * sizeof(float));
+        mesh.indices = (unsigned short*)MemAlloc(mesh.triangleCount * 3 * sizeof(unsigned short));
+
+        int k = 0;
+        auto addQuad = [&](int i0, int i1, int i2, int i3) {
+            mesh.indices[k++] = i0; mesh.indices[k++] = i1; mesh.indices[k++] = i2;
+            mesh.indices[k++] = i0; mesh.indices[k++] = i2; mesh.indices[k++] = i3;
+            mesh.indices[k++] = i0; mesh.indices[k++] = i2; mesh.indices[k++] = i1;
+            mesh.indices[k++] = i0; mesh.indices[k++] = i3; mesh.indices[k++] = i2;
+        };
+        
+        auto getIdx = [&](int x, int y, int z) { return z * rows * cols + y * cols + x; };
+
+        for (int y = 0; y < rows - 1; y++) {
+            for (int x = 0; x < cols - 1; x++) {
+                addQuad(getIdx(x, y, layers-1), getIdx(x+1, y, layers-1), getIdx(x+1, y+1, layers-1), getIdx(x, y+1, layers-1));
+            }
+        }
+        for (int y = 0; y < rows - 1; y++) {
+            for (int x = 0; x < cols - 1; x++) {
+                addQuad(getIdx(x, y, 0), getIdx(x, y+1, 0), getIdx(x+1, y+1, 0), getIdx(x+1, y, 0));
+            }
+        }
+        for (int z = 0; z < layers - 1; z++) {
+            for (int x = 0; x < cols - 1; x++) {
+                addQuad(getIdx(x, rows-1, z), getIdx(x+1, rows-1, z), getIdx(x+1, rows-1, z+1), getIdx(x, rows-1, z+1));
+            }
+        }
+        for (int z = 0; z < layers - 1; z++) {
+            for (int x = 0; x < cols - 1; x++) {
+                addQuad(getIdx(x, 0, z), getIdx(x, 0, z+1), getIdx(x+1, 0, z+1), getIdx(x+1, 0, z));
+            }
+        }
+        for (int z = 0; z < layers - 1; z++) {
+            for (int y = 0; y < rows - 1; y++) {
+                addQuad(getIdx(cols-1, y, z), getIdx(cols-1, y+1, z), getIdx(cols-1, y+1, z+1), getIdx(cols-1, y, z+1));
+            }
+        }
+        for (int z = 0; z < layers - 1; z++) {
+            for (int y = 0; y < rows - 1; y++) {
+                addQuad(getIdx(0, y, z), getIdx(0, y, z+1), getIdx(0, y+1, z+1), getIdx(0, y+1, z));
+            }
+        }
+
+        for (int i = 0; i < mesh.vertexCount; i++) {
+            mesh.vertices[i*3] = 0; mesh.vertices[i*3+1] = 0; mesh.vertices[i*3+2] = 0;
+            mesh.normals[i*3] = 0; mesh.normals[i*3+1] = 1; mesh.normals[i*3+2] = 0;
+            mesh.texcoords[i*2] = 0; mesh.texcoords[i*2+1] = 0;
+        }
+
+        UploadMesh(&mesh, true);
+        model = LoadModelFromMesh(mesh);
+    }
+
     void update() {
         if (particles.empty()) return;
 
-        for (int i = 0; i < rows * cols; i++) {
-            if (particles[i]) {
+        for (int i = 0; i < mesh.vertexCount; i++) {
+            if (i < (int)particles.size() && particles[i]) {
                 mesh.vertices[i * 3] = particles[i]->position.x;
                 mesh.vertices[i * 3 + 1] = particles[i]->position.y;
                 mesh.vertices[i * 3 + 2] = particles[i]->position.z;
             }
         }
 
+        if (mesh.normals == nullptr) return;
         memset(mesh.normals, 0, mesh.vertexCount * 3 * sizeof(float));
 
+        if (mesh.indices == nullptr) return;
         for (int i = 0; i < mesh.triangleCount; i++) {
             int idx1 = mesh.indices[i * 3];
             int idx2 = mesh.indices[i * 3 + 1];
@@ -148,7 +227,6 @@ struct Cloth {
     void draw() {
         model.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = color;
         DrawModel(model, { 0,0,0 }, 1.0f, WHITE);
-        DrawModelWires(model, { 0,0,0 }, 1.0f, ColorBrightness(color, -0.3f));
     }
 };
 
@@ -376,6 +454,7 @@ enum class SpawnShape {
     Chain,
     Car,
     Cloth,
+    Blob,
 };
 
 enum class SpawnMode {
@@ -822,7 +901,7 @@ int main() {
     
     PhysicsWorld physicsWorld;
     std::list<RigidBody> dynamicBodies;
-    std::vector<Cloth> cloths;
+    std::vector<SoftBody> cloths;
     std::unordered_map<const RigidBody*, Renderer::RenderStyle> bodyStyles;
     static std::unordered_map<int, std::shared_ptr<TriangleMesh>> torusRenderCache;
 
@@ -1116,7 +1195,7 @@ int main() {
                 float stiffness = 800.0f;
                 float damping = 2.0f;
                 
-                Cloth cloth;
+                SoftBody cloth;
                 cloth.init(rows, cols, currentMaterial.color);
                 cloth.particles.reserve(rows * cols);
 
@@ -1190,6 +1269,108 @@ int main() {
                     }
                 }
                 cloths.push_back(cloth);
+            } else if (currentShape == SpawnShape::Blob) {
+                Vec3 startPos;
+                if (spawnMode == SpawnMode::Throw) {
+                    startPos = camPos + camFwd * 3.0f;
+                } else {
+                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    if (hit.hit) {
+                        startPos = hit.point + hit.normal * 1.5f;
+                    } else {
+                        startPos = camPos + camFwd * 5.0f;
+                    }
+                }
+
+                int dim = 3;
+                float spacing = 0.4f * std::clamp(currentSize, 0.5f, 2.0f);
+                float radius = spacing * 0.6f;
+                
+                float particleVol = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
+                float density = std::max(1.0f, currentMaterial.density);
+                float stiffness = 6.0f * density;
+                float damping = 0.1f * density;
+
+                SoftBody blob;
+                blob.initBlob(dim, dim, dim, currentMaterial.color);
+                blob.particles.reserve(dim * dim * dim);
+
+                static int nextGroupId = 1;
+                int blobGroupId = nextGroupId++;
+
+                for (int z = 0; z < dim; ++z) {
+                    for (int y = 0; y < dim; ++y) {
+                        for (int x = 0; x < dim; ++x) {
+                            RigidBody p;
+                            p.position = startPos + Vec3{(float)(x - 1) * spacing, (float)(y - 1) * spacing, (float)(z - 1) * spacing};
+                            p.velocity = {0.0f, 0.0f, 0.0f};
+                            p.orientation = Quat::identity();
+                            p.angularVelocity = {0.0f, 0.0f, 0.0f};
+                            p.collider = Collider::createSphere(radius);
+                            
+                            float vol = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
+                            p.mass = vol * currentMaterial.density;
+                            p.friction = currentMaterial.friction;
+                            p.restitution = currentMaterial.restitution;
+                            p.visible = false;
+                            p.groupId = blobGroupId;
+                            
+                            p.useExplicitInertia = true;
+                            p.explicitInvInertia = {0.0f, 0.0f, 0.0f};
+                            
+                            if (spawnMode == SpawnMode::Throw) {
+                                p.velocity = camFwd * 10.0f;
+                            }
+                            
+                            if (spawnMode == SpawnMode::PlaceStatic) {
+                                p.isStatic = true;
+                                p.mass = 0.0f;
+                            }
+
+                            dynamicBodies.push_back(p);
+                            RigidBody* ptr = &dynamicBodies.back();
+                            physicsWorld.addRigidBody(ptr);
+                            blob.particles.push_back(ptr);
+                        }
+                    }
+                }
+
+                auto idx = [&](int x, int y, int z) { return z * 9 + y * 3 + x; };
+
+                for (int z = 0; z < dim; ++z) {
+                    for (int y = 0; y < dim; ++y) {
+                        for (int x = 0; x < dim; ++x) {
+                            RigidBody* a = blob.particles[idx(x, y, z)];
+
+                            if (x + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x+1, y, z)], spacing, stiffness, damping);
+                            if (y + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x, y+1, z)], spacing, stiffness, damping);
+                            if (z + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x, y, z+1)], spacing, stiffness, damping);
+
+                            float diag2 = spacing * 1.4142f;
+                            if (x + 1 < dim && y + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x+1, y+1, z)], diag2, stiffness, damping);
+                            if (x + 1 < dim && y - 1 >= 0)  physicsWorld.addSpring(a, blob.particles[idx(x+1, y-1, z)], diag2, stiffness, damping);
+                            
+                            if (y + 1 < dim && z + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x, y+1, z+1)], diag2, stiffness, damping);
+                            if (y + 1 < dim && z - 1 >= 0)  physicsWorld.addSpring(a, blob.particles[idx(x, y+1, z-1)], diag2, stiffness, damping);
+
+                            if (x + 1 < dim && z + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x+1, y, z+1)], diag2, stiffness, damping);
+                            if (x + 1 < dim && z - 1 >= 0)  physicsWorld.addSpring(a, blob.particles[idx(x+1, y, z-1)], diag2, stiffness, damping);
+
+                            float diag3 = spacing * 1.732f;
+                            if (x + 1 < dim && y + 1 < dim && z + 1 < dim) 
+                                physicsWorld.addSpring(a, blob.particles[idx(x+1, y+1, z+1)], diag3, stiffness, damping);
+                            if (x + 1 < dim && y + 1 < dim && z - 1 >= 0) 
+                                physicsWorld.addSpring(a, blob.particles[idx(x+1, y+1, z-1)], diag3, stiffness, damping);
+                            if (x + 1 < dim && y - 1 >= 0 && z + 1 < dim) 
+                                physicsWorld.addSpring(a, blob.particles[idx(x+1, y-1, z+1)], diag3, stiffness, damping);
+                            if (x + 1 < dim && y - 1 >= 0 && z - 1 >= 0) 
+                                physicsWorld.addSpring(a, blob.particles[idx(x+1, y-1, z-1)], diag3, stiffness, damping);
+                        }
+                    }
+                }
+                cloths.push_back(blob);
+                g_activeBlobIndex = (int)cloths.size() - 1;
+                g_carBody = nullptr;
             } else {
                 RigidBody b;
                 b.position = camPos + camFwd * 2.0f;
@@ -1399,6 +1580,45 @@ int main() {
                     }
 
                     bodyStyles[rb] = st;
+                }
+
+                if (currentShape == SpawnShape::Car) {
+                    g_carBody = &dynamicBodies.back();
+                    g_activeBlobIndex = -1;
+                } else {
+                    g_carBody = nullptr;
+                    g_activeBlobIndex = -1;
+                }
+            }
+        }
+        {
+            Vec3 camFwd = renderer.getCameraForward();
+            camFwd.y = 0.0f;
+            if (camFwd.lengthSq() > 1e-6f) camFwd = camFwd.normalized();
+            else camFwd = {0.0f, 0.0f, 1.0f};
+            
+            Vec3 camRight = Vec3::cross(camFwd, {0.0f, 1.0f, 0.0f}).normalized();
+            
+            Vec3 moveDir = {0.0f, 0.0f, 0.0f};
+            if (IsKeyDown(KEY_UP)) moveDir += camFwd;
+            if (IsKeyDown(KEY_DOWN)) moveDir -= camFwd;
+            if (IsKeyDown(KEY_LEFT)) moveDir -= camRight;
+            if (IsKeyDown(KEY_RIGHT)) moveDir += camRight;
+
+            if (moveDir.lengthSq() > 1e-6f) {
+                moveDir = moveDir.normalized();
+                float accelMag = 12.0f;
+                
+                if (g_activeBlobIndex >= 0 && g_activeBlobIndex < (int)cloths.size()) {
+                    auto& sb = cloths[g_activeBlobIndex];
+                    if (sb.isBlob) {
+                        for (RigidBody* p : sb.particles) {
+                            if (p && !p->isStatic) {
+                                p->velocity += moveDir * (accelMag * FIXED_DT);
+                                p->sleeping = false;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1648,6 +1868,12 @@ int main() {
                             ghost.collider = Collider::createBox({dim * 0.5f, 0.1f, dim * 0.5f});
                             break;
                         }
+                        case SpawnShape::Blob: {
+                            float spacing = 0.4f * std::clamp(currentSize, 0.5f, 2.0f);
+                            float dim = spacing;
+                            ghost.collider = Collider::createBox({dim, dim, dim});
+                            break;
+                        }
                     }
 
                     float offset = placementOffsetAlongNormal(ghost.collider, ghost.orientation, placeNormal);
@@ -1708,7 +1934,7 @@ int main() {
             {
                 std::vector<std::string> shapes = {
                     "Sphere", "Cube", "Capsule", "Tetrahedron", 
-                    "Bipyramid", "Dodecahedron", "Ramp", "Torus", "Chain", "Car", "Cloth"
+                    "Bipyramid", "Dodecahedron", "Ramp", "Torus", "Chain", "Car", "Cloth", "Blob"
                 };
                 int sel = (int)currentShape;
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};

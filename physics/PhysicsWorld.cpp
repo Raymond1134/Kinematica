@@ -686,7 +686,7 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
     m.normal = {0.0f, -1.0f, 0.0f};
 
     m.restitution = (body->restitution + floorRestitution) * 0.5f;
-    m.friction = (body->friction + floorFriction) * 0.5f;
+    m.friction = sqrtf(body->friction * floorFriction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = characteristicContactRadius(body);
 
@@ -1118,7 +1118,7 @@ void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const Rigid
         m.b = const_cast<RigidBody*>(boxBody);
         m.normal = nWorld;
         m.restitution = (meshBody->restitution + boxBody->restitution) * 0.5f;
-        m.friction = (meshBody->friction + boxBody->friction) * 0.5f;
+        m.friction = sqrtf(meshBody->friction * boxBody->friction);
         m.frictionTwist = m.friction * 0.35f;
         m.patchR = 0.5f * (characteristicContactRadius(meshBody) + characteristicContactRadius(boxBody));
         m.count = 0;
@@ -1306,7 +1306,7 @@ void PhysicsWorld::appendMeshConvexManifolds(const RigidBody* meshBody, const Ri
         m.b = const_cast<RigidBody*>(convexBody);
         m.normal = nWorld;
         m.restitution = (meshBody->restitution + convexBody->restitution) * 0.5f;
-        m.friction = (meshBody->friction + convexBody->friction) * 0.5f;
+        m.friction = sqrtf(meshBody->friction * convexBody->friction);
         m.frictionTwist = m.friction * 0.35f;
         m.patchR = 0.5f * (characteristicContactRadius(meshBody) + characteristicContactRadius(convexBody));
         m.count = 0;
@@ -1481,7 +1481,7 @@ bool PhysicsWorld::collideSphereSphere(RigidBody* a, RigidBody* b, ContactManifo
     m.b = b;
     m.normal = n;
     m.restitution = (a->restitution + b->restitution) * 0.5f;
-    m.friction = (a->friction + b->friction) * 0.5f;
+    m.friction = sqrtf(a->friction * b->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(a) + characteristicContactRadius(b));
     m.count = 1;
@@ -1522,7 +1522,7 @@ bool PhysicsWorld::collideSphereBox(RigidBody* sphereBody, RigidBody* boxBody, C
         m.b = boxBody;
         m.normal = n;
         m.restitution = (sphereBody->restitution + boxBody->restitution) * 0.5f;
-        m.friction = (sphereBody->friction + boxBody->friction) * 0.5f;
+        m.friction = sqrtf(sphereBody->friction * boxBody->friction);
         m.frictionTwist = m.friction * 0.35f;
         m.patchR = 0.5f * (characteristicContactRadius(sphereBody) + characteristicContactRadius(boxBody));
         m.count = 1;
@@ -1561,7 +1561,7 @@ bool PhysicsWorld::collideSphereBox(RigidBody* sphereBody, RigidBody* boxBody, C
     m.b = boxBody;
     m.normal = n;
     m.restitution = (sphereBody->restitution + boxBody->restitution) * 0.5f;
-    m.friction = (sphereBody->friction + boxBody->friction) * 0.5f;
+    m.friction = sqrtf(sphereBody->friction * boxBody->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(sphereBody) + characteristicContactRadius(boxBody));
     m.count = 1;
@@ -1604,7 +1604,7 @@ bool PhysicsWorld::collideCapsuleSphere(RigidBody* capsuleBody, RigidBody* spher
     m.b = sphereBody;
     m.normal = n;
     m.restitution = (capsuleBody->restitution + sphereBody->restitution) * 0.5f;
-    m.friction = (capsuleBody->friction + sphereBody->friction) * 0.5f;
+    m.friction = sqrtf(capsuleBody->friction * sphereBody->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(capsuleBody) + characteristicContactRadius(sphereBody));
     m.count = 1;
@@ -1647,7 +1647,7 @@ bool PhysicsWorld::collideCapsuleCapsule(RigidBody* a, RigidBody* b, ContactMani
     m.b = b;
     m.normal = n;
     m.restitution = (a->restitution + b->restitution) * 0.5f;
-    m.friction = (a->friction + b->friction) * 0.5f;
+    m.friction = sqrtf(a->friction * b->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(a) + characteristicContactRadius(b));
     m.count = 1;
@@ -1738,7 +1738,7 @@ bool PhysicsWorld::collideBoxBox(RigidBody* a, RigidBody* b, ContactManifold& m)
         m.b = b;
         m.normal = bestAxis;
         m.restitution = (a->restitution + b->restitution) * 0.5f;
-        m.friction = (a->friction + b->friction) * 0.5f;
+        m.friction = sqrtf(a->friction * b->friction);
         m.frictionTwist = m.friction * 0.35f;
         m.patchR = 0.5f * (characteristicContactRadius(a) + characteristicContactRadius(b));
 
@@ -1834,7 +1834,7 @@ bool PhysicsWorld::collideBoxBox(RigidBody* a, RigidBody* b, ContactManifold& m)
     m.b = b;
     m.normal = n;
     m.restitution = (a->restitution + b->restitution) * 0.5f;
-    m.friction = (a->friction + b->friction) * 0.5f;
+    m.friction = sqrtf(a->friction * b->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(a) + characteristicContactRadius(b));
     return true;
@@ -2891,7 +2891,7 @@ bool PhysicsWorld::detectBodyBodyConvex(RigidBody* a, RigidBody* b, ContactManif
     m.b = b;
     m.normal = normal;
     m.restitution = (a->restitution + b->restitution) * 0.5f;
-    m.friction = (a->friction + b->friction) * 0.5f;
+    m.friction = sqrtf(a->friction * b->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(a) + characteristicContactRadius(b));
     m.count = 1;
@@ -3121,7 +3121,7 @@ void PhysicsWorld::appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::v
             hit = collideMeshSphere(meshBody, &pseudo, m);
             if (hit) {
                 m.restitution = (otherBody->restitution + meshBody->restitution) * 0.5f;
-                m.friction = (otherBody->friction + meshBody->friction) * 0.5f;
+                m.friction = sqrtf(otherBody->friction * meshBody->friction);
                 m.frictionTwist = m.friction * 0.35f;
             }
             if (!hit) return;
@@ -3235,7 +3235,7 @@ bool PhysicsWorld::collideMeshSphere(const RigidBody* meshBody, const RigidBody*
     m.b = const_cast<RigidBody*>(sphereBody);
     m.normal = nWorld;
     m.restitution = (meshBody->restitution + sphereBody->restitution) * 0.5f;
-    m.friction = (meshBody->friction + sphereBody->friction) * 0.5f;
+    m.friction = sqrtf(meshBody->friction * sphereBody->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(meshBody) + characteristicContactRadius(sphereBody));
     m.count = 1;
@@ -3379,7 +3379,7 @@ bool PhysicsWorld::collideMeshCapsule(const RigidBody* meshBody, const RigidBody
     m.b = const_cast<RigidBody*>(capsuleBody);
     m.normal = nWorld;
     m.restitution = (meshBody->restitution + capsuleBody->restitution) * 0.5f;
-    m.friction = (meshBody->friction + capsuleBody->friction) * 0.5f;
+    m.friction = sqrtf(meshBody->friction * capsuleBody->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(meshBody) + characteristicContactRadius(capsuleBody));
     m.count = 1;
@@ -3688,7 +3688,7 @@ bool PhysicsWorld::collideMeshBox(const RigidBody* meshBody, const RigidBody* bo
     m.b = const_cast<RigidBody*>(boxBody);
     m.normal = nWorld;
     m.restitution = (meshBody->restitution + boxBody->restitution) * 0.5f;
-    m.friction = (meshBody->friction + boxBody->friction) * 0.5f;
+    m.friction = sqrtf(meshBody->friction * boxBody->friction);
     m.frictionTwist = m.friction * 0.35f;
     m.patchR = 0.5f * (characteristicContactRadius(meshBody) + characteristicContactRadius(boxBody));
     m.count = 0;
