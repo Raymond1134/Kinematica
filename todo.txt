@@ -1,0 +1,96 @@
+TODO LIST - KINEMATICA RELEASE 1.0
+====================================
+
+0) USER INTERFACE & INPUT SWEEP
+   [x] Add "Kill All" button on HUD to remove all dynamic shapes from the scene immediately. (Key: K)
+   [x] Add "Reset Scene" button on HUD to restore the initial state. (Key: R)
+   [x] Add "Pause/Resume" toggle on HUD. (Key: P)
+   [x] Add "Single Step" key on HUD when paused for debugging physics frames. (Key: .)
+   [x] Add Simulation Speed Control on HUD to decrease/increase time scale. (Keys: [ and ])
+   [x] Deep Scan: Check main.cpp input handling. Ensure keys don't conflict.
+   [x] Deep Scan: Verify mouse picking/interaction works smoothly with the new friction model.
+
+1) RENDERING POLISH (VISUALS)
+   [x] Implement a global Directional Light (Sun) source.
+       - Define light direction and color in Renderer.
+   [-] Implement Shadow Mapping.
+       - (Cancelled) Removed implementation as it was buggy and deemed unnecessary.
+   [x] Improve Lighting Model.
+       - Switch from simple diffuse to Blinn-Phong or PBR (Physically Based Rendering) if feasible.
+       - Add Specular highlights based on material "roughness" (inverse of friction/smoothness?).
+   [-] Add Ambient Occlusion (SSAO) or simple hemisphere lighting to prevent pitch-black shadows.
+   [x] Polish the Ground Plane.
+       - Add a grid shader that fades into the distance.
+       - Make the floor look like a solid material (e.g., tile or concrete texture).
+
+2) OPTIMIZATION (PERFORMANCE)
+   [x] Broadphase Collision Detection.
+       - Currently, collision detection might be O(N^2). Implement a Broadphase algorithm.
+       - Options: Sweep and Prune (SAP) or Dynamic AABB Tree (BVH).
+       - Goal: Only check narrow-phase collision for pairs that are close to each other.
+   [x] Spatial Partitioning for Rendering.
+       - Frustum culling: Don't draw objects behind the camera.
+   [x] Multithreading Improvements.
+       - Verify OpenMP usage in PhysicsWorld::step.
+       - Ensure contact solving is efficiently parallelized (Coloring or Island generation).
+   [x] Memory Management.
+       - Use object pools for ContactPoints and Manifolds to reduce allocation overhead.
+
+3) CODE CLEANUP
+   [x] Remove Global Variables.
+       - Refactor `g_carBody`, `g_activeBlobIndex` in main.cpp into a `DemoState` struct or class.
+   [x] Remove Dead Code.
+       - Scan for commented-out blocks in PhysicsWorld.cpp and Renderer.cpp.
+       - Remove unused includes.
+       - [x] Remove code that is redundant or not really neccessary.
+   [x] Standardize Formatting.
+       - Ensure consistent indentation (4 spaces) and brace style.
+   [x] Fix Warnings.
+       - Compile with `-Wall` (or high warning level) and fix all warnings.
+
+4) REPO ORGANIZATION
+   [x] Modularize main.cpp.
+       - Move `SoftBody` struct to `physics/SoftBody.h` and `physics/SoftBody.cpp`.
+       - Move `MaterialProps` to `physics/Material.h`.
+   [x] Organize Headers.
+       - Ensure all headers have `#pragma once`.
+       - Group physics headers (Constraints, Collisions, Dynamics) logically.
+   [x] Clean up CMakeLists.txt.
+       - Ensure all new source files are added explicitly.
+
+5) ABSTRACTION (API DESIGN)
+   [x] Create a `PhysicsFactory` or `ShapeBuilder` class.
+       - Goal: `auto box = Physics::CreateBox(pos, size, material);`
+   [x] Abstract Compound Shapes.
+       - Create a helper to glue multiple shapes together easily.
+   [x] Abstract Soft Bodies / Blobs.
+       - `Physics::CreateBlob(pos, radius, particleCount, stiffness);`
+   [x] Material System.
+       - Create a `Material` struct that holds friction, restitution, density, and color.
+       - Allow passing this `Material` to creation functions instead of raw floats.
+
+6) DOCUMENTATION
+   [x] Create `docs/API.md`.
+       - Document the new `PhysicsFactory` API.
+       - Explain the units used (Meters, Kilograms, Seconds).
+   [x] Create `docs/ARCHITECTURE.md`.
+       - High-level overview of the physics loop (Integration -> Broadphase -> Narrowphase -> Resolution).
+   [x] Comment Public APIs.
+       - Add Doxygen-style comments to header files for public functions.
+
+7) DEEP SCAN & MISC TASKS
+   [x] Verify Constraint Stability.
+       - Check if chains of bodies (ropes/bridges) remain stable under high tension.
+   [x] Verify Friction Model.
+       - Double-check the new `sqrt(a*b)` mixing rule covers all edge cases.
+   [x] Check Tunneling.
+       - Verify CCD (Continuous Collision Detection) prevents fast objects from passing through walls.
+   [x] Memory Leak Check.
+       - Ensure all `new RigidBody` calls have matching `delete` or are managed by `PhysicsWorld` destructor.
+
+8) FINAL POLISH
+   [x] Update README.md.
+       - Add GIFs/Screenshots of the final polished engine.
+       - Clear build instructions for Windows/Linux/Mac.
+   [x] Version Bump.
+       - Tag the release as v1.0.

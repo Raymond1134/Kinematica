@@ -1,80 +1,73 @@
 
-# Kinematica
+# Kinematica Physics Engine
 
-A user-driven 3D rigid-body physics sandbox and engine.
+**Version 1.0**
 
-## Build Options (Windows)
-
-### Option 1: VS Code Tasks (Easiest)
-
-If you're using VS Code, use the built-in tasks:
-1. **Terminal → Run Task → "Configure (vcpkg)"** (if you have vcpkg) or **"Configure (FetchContent)"**
-2. **Terminal → Run Build Task** (or press `Ctrl+Shift+B`)
-3. **Terminal → Run Task → "Run (Release)"**
-
-### Option 2: Command Line with vcpkg
-
-1. Install vcpkg in your user directory:
-   ```powershell
-   cd $env:USERPROFILE
-   git clone https://github.com/microsoft/vcpkg.git
-   .\vcpkg\bootstrap-vcpkg.bat
-   ```
-2. Install raylib:
-   ```powershell
-   .\vcpkg\vcpkg.exe install raylib:x64-windows
-   ```
-3. Configure and build (vcpkg will download CMake if needed):
-   ```powershell
-   cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$env:USERPROFILE\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
-   cmake --build build --config Release
-   .\build\Release\app.exe
-   ```
-
-### Option 3: Auto-Fetch raylib (no vcpkg)
-
-CMake will download and build raylib automatically at configure time:
-```powershell
-cmake -S . -B build
-cmake --build build --config Release
-.\build\Release\app.exe
-```
-
-**Note:** If `cmake` is not in your PATH, vcpkg downloads it automatically. The VS Code tasks use the vcpkg-downloaded cmake.
-
-## Project Layout
-
-- `math/` — Vector math (`Vec3`)
-- `physics/` — Core physics (`RigidBody`, `PhysicsWorld`)
-- `render/` — 3D viewer using raylib (`Renderer`)
-- `main.cpp` — Application entry with fixed-timestep physics loop
-- `materials/` — Material presets (JSON)
-
-
-## Controls
-
-- **Right-click + drag** — Orbit camera
-- **Mouse wheel** — Zoom in/out
-- **WASD** — Move camera (free-fly)
-- **Q** — Spawn the currently selected shape
-- **Right-side panel** — Select shape, size, material, and floor material
-- **Alt+Enter** — Toggle fullscreen
-- **ESC or close window** — Exit
-
+A lightweight 3D physics engine and sandbox built with C++ and Raylib.
 
 ## Features
 
-- User-driven: spawn bodies with **Q** using the on-screen spawner panel
-- Rigid body physics: box, sphere, capsule colliders
-- Fixed timestep, sequential impulse solver, manifold contacts
-- Sleep/wake logic, restitution, friction
-- Visual polish: wireframes, axis markers, cube outlines
-- Fullscreen toggle (Alt+Enter)
-- Clean separation: math, physics, rendering modules
+- **Rigid Body Dynamics**: Box, Sphere, Capsule, Convex Hull, and Mesh colliders.
+- **Soft Body Dynamics**: Cloth simulation and Jelly-like blobs.
+- **Constraints**: Ball-Socket and Hinge joints.
+- **Compound Shapes**: Vehicles and complex objects.
+- **Continuous Collision Detection (CCD)**: Prevents tunneling of fast-moving objects.
+- **Interactive Sandbox**: Spawn, throw, and manipulate objects in real-time.
+- **Visual Polish**: Lighting, instanced rendering, and clean UI.
 
-## Notes
+## Controls
 
-- Physics engine is completely independent of rendering
-- Rendering is separated in the `render/` module
-- VS Code is configured with IntelliSense support via `.vscode/c_cpp_properties.json`
-- Tasks are set up in `.vscode/tasks.json` for one-click build/run
+| Key / Action | Description |
+| --- | --- |
+| **WASD** | Move Camera (Free-fly) |
+| **Right Click + Drag** | Look Around / Orbit |
+| **Space** | Move Camera Up |
+| **Left Shift** | Move Camera Down |
+| **Mouse Wheel** | Zoom In / Out |
+| **Q** | Spawn Selected Shape |
+| **K** | Kill All (Clear Scene) |
+| **R** | Reset Scene |
+| **P** | Pause / Resume Simulation |
+| **.** | Single Step (when paused) |
+| **[ / ]** | Decrease / Increase Time Scale |
+| **Alt + Enter** | Toggle Fullscreen |
+| **Left Click** | Interact with UI (Right Panel) |
+
+## Build Instructions (Windows)
+
+### Prerequisites
+- **Visual Studio 2022** (or C++ Build Tools)
+- **CMake** (3.20+)
+- **Raylib** (Managed via FetchContent or vcpkg)
+
+### Building with VS Code (Recommended)
+1. Open the folder in VS Code.
+2. Press `Ctrl+Shift+B` to build.
+3. Run the **"Run (Release)"** task.
+
+### Building from Command Line
+```powershell
+# Configure
+cmake -S . -B build
+
+# Build
+cmake --build build --config Release
+
+# Run
+.\build\Release\app.exe
+```
+
+## Documentation
+
+See the `docs/` folder for detailed documentation:
+- [API Reference](docs/API.md)
+- [Architecture Overview](docs/ARCHITECTURE.md)
+- [Examples](docs/EXAMPLES.md)
+
+## Project Structure
+
+- `physics/` — Core physics engine (`PhysicsWorld`, `RigidBody`, `Solver`).
+- `math/` — Vector and Quaternion math library.
+- `render/` — Rendering system using Raylib.
+- `materials/` — JSON-based material definitions.
+- `main.cpp` — Sandbox application entry point.

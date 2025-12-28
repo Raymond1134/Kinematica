@@ -2,13 +2,21 @@
 #include "physics/RigidBody.h"
 #include "physics/Spring.h"
 #include "physics/collision/TriangleMesh.h"
+#include "physics/Material.h"
+#include "physics/SoftBody.h"
+#include "physics/PhysicsFactory.h"
+#include "physics/Raycast.h"
 #include "render/Renderer.h"
-#include "ui_dropdown.h"
+#include "ui/UI.h"
+#include "utils/JsonUtils.h"
+#include "utils/MaterialLoader.h"
+#include "utils/MeshGen.h"
 #include <chrono>
 #include <raylib.h>
 #include <raymath.h>
 #include <rlgl.h>
 #include <algorithm>
+#include <utility>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
@@ -20,367 +28,16 @@
 #include <unordered_map>
 #include <cstring>
 
-static RigidBody* g_carBody = nullptr;
-static int g_activeBlobIndex = -1;
-
-struct MaterialProps {
-    std::string name;
-    float density = 1.0f;
-    float friction = 0.5f;
-    float restitution = 0.0f;
-
-    Color color = Color{200, 200, 200, 255};
-    float opacity = 1.0f;
-    bool outline = false;
+struct DemoState {
+    RigidBody* carBody = nullptr;
+    int activeBlobIndex = -1;
 };
-
-struct SoftBody {
-    std::vector<RigidBody*> particles;
-    int rows = 0;
-    int cols = 0;
-    int layers = 0;
-    bool isBlob = false;
-    Mesh mesh = { 0 };
-    Model model = { 0 };
-    Color color = WHITE;
-
-    void init(int r, int c, Color col) {
-        rows = r;
-        cols = c;
-        layers = 1;
-        isBlob = false;
-        color = col;
-
-        mesh = { 0 };
-        mesh.vertexCount = rows * cols;
-        mesh.triangleCount = (rows - 1) * (cols - 1) * 4;
-
-        mesh.vertices = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
-        mesh.normals = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
-        mesh.texcoords = (float*)MemAlloc(mesh.vertexCount * 2 * sizeof(float));
-        mesh.indices = (unsigned short*)MemAlloc(mesh.triangleCount * 3 * sizeof(unsigned short));
-
-        int k = 0;
-        for (int i = 0; i < rows - 1; i++) {
-            for (int j = 0; j < cols - 1; j++) {
-                int nextRow = i + 1;
-                int nextCol = j + 1;
-
-                int idx0 = i * cols + j;
-                int idx1 = nextRow * cols + j;
-                int idx2 = nextRow * cols + nextCol;
-                int idx3 = i * cols + nextCol;
-
-                mesh.indices[k++] = idx0;
-                mesh.indices[k++] = idx1;
-                mesh.indices[k++] = idx2;
-
-                mesh.indices[k++] = idx0;
-                mesh.indices[k++] = idx2;
-                mesh.indices[k++] = idx3;
-
-                mesh.indices[k++] = idx0;
-                mesh.indices[k++] = idx2;
-                mesh.indices[k++] = idx1;
-
-                mesh.indices[k++] = idx0;
-                mesh.indices[k++] = idx3;
-                mesh.indices[k++] = idx2;
-            }
-        }
-
-        for (int i = 0; i < rows; i++) {
-            for (int j = 0; j < cols; j++) {
-                mesh.texcoords[(i * cols + j) * 2] = (float)j / (cols - 1);
-                mesh.texcoords[(i * cols + j) * 2 + 1] = (float)i / (rows - 1);
-                
-                mesh.vertices[(i * cols + j) * 3] = 0;
-                mesh.vertices[(i * cols + j) * 3 + 1] = 0;
-                mesh.vertices[(i * cols + j) * 3 + 2] = 0;
-                
-                mesh.normals[(i * cols + j) * 3] = 0;
-                mesh.normals[(i * cols + j) * 3 + 1] = 1;
-                mesh.normals[(i * cols + j) * 3 + 2] = 0;
-            }
-        }
-
-        UploadMesh(&mesh, true);
-        model = LoadModelFromMesh(mesh);
-    }
-
-    void initBlob(int r, int c, int l, Color col) {
-        rows = r;
-        cols = c;
-        layers = l;
-        isBlob = true;
-        color = col;
-        
-        mesh = { 0 };
-        mesh.vertexCount = rows * cols * layers;
-        
-        int hullQuads = 2 * ((rows-1)*(cols-1) + (rows-1)*(layers-1) + (cols-1)*(layers-1));
-        mesh.triangleCount = hullQuads * 4;
-
-        mesh.vertices = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
-        mesh.normals = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
-        mesh.texcoords = (float*)MemAlloc(mesh.vertexCount * 2 * sizeof(float));
-        mesh.indices = (unsigned short*)MemAlloc(mesh.triangleCount * 3 * sizeof(unsigned short));
-
-        int k = 0;
-        auto addQuad = [&](int i0, int i1, int i2, int i3) {
-            mesh.indices[k++] = i0; mesh.indices[k++] = i1; mesh.indices[k++] = i2;
-            mesh.indices[k++] = i0; mesh.indices[k++] = i2; mesh.indices[k++] = i3;
-            mesh.indices[k++] = i0; mesh.indices[k++] = i2; mesh.indices[k++] = i1;
-            mesh.indices[k++] = i0; mesh.indices[k++] = i3; mesh.indices[k++] = i2;
-        };
-        
-        auto getIdx = [&](int x, int y, int z) { return z * rows * cols + y * cols + x; };
-
-        for (int y = 0; y < rows - 1; y++) {
-            for (int x = 0; x < cols - 1; x++) {
-                addQuad(getIdx(x, y, layers-1), getIdx(x+1, y, layers-1), getIdx(x+1, y+1, layers-1), getIdx(x, y+1, layers-1));
-            }
-        }
-        for (int y = 0; y < rows - 1; y++) {
-            for (int x = 0; x < cols - 1; x++) {
-                addQuad(getIdx(x, y, 0), getIdx(x, y+1, 0), getIdx(x+1, y+1, 0), getIdx(x+1, y, 0));
-            }
-        }
-        for (int z = 0; z < layers - 1; z++) {
-            for (int x = 0; x < cols - 1; x++) {
-                addQuad(getIdx(x, rows-1, z), getIdx(x+1, rows-1, z), getIdx(x+1, rows-1, z+1), getIdx(x, rows-1, z+1));
-            }
-        }
-        for (int z = 0; z < layers - 1; z++) {
-            for (int x = 0; x < cols - 1; x++) {
-                addQuad(getIdx(x, 0, z), getIdx(x, 0, z+1), getIdx(x+1, 0, z+1), getIdx(x+1, 0, z));
-            }
-        }
-        for (int z = 0; z < layers - 1; z++) {
-            for (int y = 0; y < rows - 1; y++) {
-                addQuad(getIdx(cols-1, y, z), getIdx(cols-1, y+1, z), getIdx(cols-1, y+1, z+1), getIdx(cols-1, y, z+1));
-            }
-        }
-        for (int z = 0; z < layers - 1; z++) {
-            for (int y = 0; y < rows - 1; y++) {
-                addQuad(getIdx(0, y, z), getIdx(0, y, z+1), getIdx(0, y+1, z+1), getIdx(0, y+1, z));
-            }
-        }
-
-        for (int i = 0; i < mesh.vertexCount; i++) {
-            mesh.vertices[i*3] = 0; mesh.vertices[i*3+1] = 0; mesh.vertices[i*3+2] = 0;
-            mesh.normals[i*3] = 0; mesh.normals[i*3+1] = 1; mesh.normals[i*3+2] = 0;
-            mesh.texcoords[i*2] = 0; mesh.texcoords[i*2+1] = 0;
-        }
-
-        UploadMesh(&mesh, true);
-        model = LoadModelFromMesh(mesh);
-    }
-
-    void update() {
-        if (particles.empty()) return;
-
-        for (int i = 0; i < mesh.vertexCount; i++) {
-            if (i < (int)particles.size() && particles[i]) {
-                mesh.vertices[i * 3] = particles[i]->position.x;
-                mesh.vertices[i * 3 + 1] = particles[i]->position.y;
-                mesh.vertices[i * 3 + 2] = particles[i]->position.z;
-            }
-        }
-
-        if (mesh.normals == nullptr) return;
-        memset(mesh.normals, 0, mesh.vertexCount * 3 * sizeof(float));
-
-        if (mesh.indices == nullptr) return;
-        for (int i = 0; i < mesh.triangleCount; i++) {
-            int idx1 = mesh.indices[i * 3];
-            int idx2 = mesh.indices[i * 3 + 1];
-            int idx3 = mesh.indices[i * 3 + 2];
-
-            Vec3 v1 = { mesh.vertices[idx1 * 3], mesh.vertices[idx1 * 3 + 1], mesh.vertices[idx1 * 3 + 2] };
-            Vec3 v2 = { mesh.vertices[idx2 * 3], mesh.vertices[idx2 * 3 + 1], mesh.vertices[idx2 * 3 + 2] };
-            Vec3 v3 = { mesh.vertices[idx3 * 3], mesh.vertices[idx3 * 3 + 1], mesh.vertices[idx3 * 3 + 2] };
-
-            Vec3 normal = Vec3::cross(v2 - v1, v3 - v1).normalized();
-
-            mesh.normals[idx1 * 3] += normal.x; mesh.normals[idx1 * 3 + 1] += normal.y; mesh.normals[idx1 * 3 + 2] += normal.z;
-            mesh.normals[idx2 * 3] += normal.x; mesh.normals[idx2 * 3 + 1] += normal.y; mesh.normals[idx2 * 3 + 2] += normal.z;
-            mesh.normals[idx3 * 3] += normal.x; mesh.normals[idx3 * 3 + 1] += normal.y; mesh.normals[idx3 * 3 + 2] += normal.z;
-        }
-
-        for (int i = 0; i < mesh.vertexCount; i++) {
-            float nx = mesh.normals[i * 3];
-            float ny = mesh.normals[i * 3 + 1];
-            float nz = mesh.normals[i * 3 + 2];
-            float len = sqrtf(nx * nx + ny * ny + nz * nz);
-            if (len > 1e-6f) {
-                mesh.normals[i * 3] /= len;
-                mesh.normals[i * 3 + 1] /= len;
-                mesh.normals[i * 3 + 2] /= len;
-            }
-        }
-
-        UpdateMeshBuffer(mesh, 0, mesh.vertices, mesh.vertexCount * 3 * sizeof(float), 0);
-        UpdateMeshBuffer(mesh, 2, mesh.normals, mesh.vertexCount * 3 * sizeof(float), 0);
-    }
-
-    void draw() {
-        model.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = color;
-        DrawModel(model, { 0,0,0 }, 1.0f, WHITE);
-    }
-};
-
-static bool jsonFindBool(const std::string& json, const char* key, bool& out) {
-    std::string k = std::string("\"") + key + "\"";
-    size_t p = json.find(k);
-    if (p == std::string::npos) return false;
-    p = json.find(':', p + k.size());
-    if (p == std::string::npos) return false;
-    ++p;
-    while (p < json.size() && std::isspace((unsigned char)json[p])) ++p;
-    if (p + 3 < json.size() && json.compare(p, 4, "true") == 0) { out = true; return true; }
-    if (p + 4 < json.size() && json.compare(p, 5, "false") == 0) { out = false; return true; }
-    return false;
-}
-
-static bool parseHexByte(const std::string& s, size_t pos, unsigned char& out) {
-    if (pos + 2 > s.size()) return false;
-    auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-        return -1;
-    };
-    int a = hex(s[pos]);
-    int b = hex(s[pos + 1]);
-    if (a < 0 || b < 0) return false;
-    out = (unsigned char)((a << 4) | b);
-    return true;
-}
-
-static bool jsonFindColor(const std::string& json, const char* key, Color& out) {
-    std::string k = std::string("\"") + key + "\"";
-    size_t p = json.find(k);
-    if (p == std::string::npos) return false;
-    p = json.find(':', p + k.size());
-    if (p == std::string::npos) return false;
-    ++p;
-    while (p < json.size() && std::isspace((unsigned char)json[p])) ++p;
-    if (p >= json.size()) return false;
-
-    // Support either:
-    //   "color": [r,g,b]  (0-1 or 0-255)
-    //   "color": "#RRGGBB"
-    if (json[p] == '"') {
-        ++p;
-        size_t e = p;
-        while (e < json.size() && json[e] != '"') ++e;
-        if (e >= json.size()) return false;
-        std::string s = json.substr(p, e - p);
-        if (s.size() == 7 && s[0] == '#') {
-            unsigned char r, g, b;
-            if (!parseHexByte(s, 1, r) || !parseHexByte(s, 3, g) || !parseHexByte(s, 5, b)) return false;
-            out = Color{r, g, b, 255};
-            return true;
-        }
-        return false;
-    }
-
-    if (json[p] != '[') return false;
-    ++p;
-    float c[3] = {0.0f, 0.0f, 0.0f};
-    for (int i = 0; i < 3; ++i) {
-        while (p < json.size() && std::isspace((unsigned char)json[p])) ++p;
-        size_t e = p;
-        while (e < json.size()) {
-            char ch = json[e];
-            if (!(std::isdigit((unsigned char)ch) || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E')) break;
-            ++e;
-        }
-        if (e == p) return false;
-        try {
-            c[i] = std::stof(json.substr(p, e - p));
-        } catch (...) {
-            return false;
-        }
-        p = e;
-        while (p < json.size() && std::isspace((unsigned char)json[p])) ++p;
-        if (i < 2) {
-            if (p >= json.size() || json[p] != ',') return false;
-            ++p;
-        }
-    }
-
-    while (p < json.size() && json[p] != ']') ++p;
-    if (p >= json.size()) return false;
-
-    bool is255 = (c[0] > 1.0f || c[1] > 1.0f || c[2] > 1.0f);
-    auto toByte = [&](float v) -> unsigned char {
-        if (!std::isfinite(v)) v = 0.0f;
-        if (is255) v = std::clamp(v, 0.0f, 255.0f);
-        else v = std::clamp(v, 0.0f, 1.0f) * 255.0f;
-        return (unsigned char)std::lround(v);
-    };
-    out = Color{toByte(c[0]), toByte(c[1]), toByte(c[2]), 255};
-    return true;
-}
 
 static Color applyOpacity(Color c, float opacity) {
     float o = std::isfinite(opacity) ? opacity : 1.0f;
     o = std::clamp(o, 0.0f, 1.0f);
     c.a = (unsigned char)std::lround(o * 255.0f);
     return c;
-}
-
-static std::string readFileText(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return {};
-    std::string s;
-    f.seekg(0, std::ios::end);
-    s.resize((size_t)f.tellg());
-    f.seekg(0, std::ios::beg);
-    f.read(s.data(), (std::streamsize)s.size());
-    return s;
-}
-
-static bool jsonFindString(const std::string& json, const char* key, std::string& out) {
-    std::string k = std::string("\"") + key + "\"";
-    size_t p = json.find(k);
-    if (p == std::string::npos) return false;
-    p = json.find(':', p + k.size());
-    if (p == std::string::npos) return false;
-    ++p;
-    while (p < json.size() && std::isspace((unsigned char)json[p])) ++p;
-    if (p >= json.size() || json[p] != '"') return false;
-    ++p;
-    size_t e = p;
-    while (e < json.size() && json[e] != '"') ++e;
-    if (e >= json.size()) return false;
-    out = json.substr(p, e - p);
-    return true;
-}
-
-static bool jsonFindNumber(const std::string& json, const char* key, float& out) {
-    std::string k = std::string("\"") + key + "\"";
-    size_t p = json.find(k);
-    if (p == std::string::npos) return false;
-    p = json.find(':', p + k.size());
-    if (p == std::string::npos) return false;
-    ++p;
-    while (p < json.size() && std::isspace((unsigned char)json[p])) ++p;
-    size_t e = p;
-    while (e < json.size()) {
-        char c = json[e];
-        if (!(std::isdigit((unsigned char)c) || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E')) break;
-        ++e;
-    }
-    if (e == p) return false;
-    try {
-        out = std::stof(json.substr(p, e - p));
-        return true;
-    } catch (...) {
-        return false;
-    }
 }
 
 static float getDeltaTime() {
@@ -390,56 +47,6 @@ static float getDeltaTime() {
     std::chrono::duration<float> dt = now - last;
     last = now;
     return dt.count();
-}
-
-static std::vector<MaterialProps> loadMaterialsFromFolder(const char* folder) {
-    std::vector<MaterialProps> out;
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    if (!fs::exists(folder, ec) || !fs::is_directory(folder, ec)) return out;
-
-    for (const auto& entry : fs::directory_iterator(folder, ec)) {
-        if (ec) break;
-        if (!entry.is_regular_file()) continue;
-        if (entry.path().extension() != ".json") continue;
-
-        std::string text = readFileText(entry.path().string());
-        if (text.empty()) continue;
-
-        MaterialProps m;
-        if (!jsonFindString(text, "name", m.name)) {
-            m.name = entry.path().stem().string();
-        }
-        jsonFindNumber(text, "density", m.density);
-        jsonFindNumber(text, "friction", m.friction);
-        jsonFindNumber(text, "restitution", m.restitution);
-        jsonFindNumber(text, "opacity", m.opacity);
-        jsonFindBool(text, "outline", m.outline);
-        jsonFindColor(text, "color", m.color);
-
-        if (m.density <= 0.0f) m.density = 1.0f;
-        m.friction = std::clamp(m.friction, 0.0f, 2.0f);
-        m.restitution = std::clamp(m.restitution, 0.0f, 1.0f);
-        m.opacity = std::clamp(m.opacity, 0.0f, 1.0f);
-        out.push_back(m);
-    }
-
-    std::sort(out.begin(), out.end(), [](const MaterialProps& a, const MaterialProps& b) { return a.name < b.name; });
-    return out;
-}
-
-static float computePolyhedronVolume(const PolyhedronShape& poly) {
-    if (poly.tris.empty() || poly.verts.empty()) return 0.0f;
-    double sum = 0.0;
-    for (const auto& t : poly.tris) {
-        const Vec3& a = poly.verts[t.a];
-        const Vec3& b = poly.verts[t.b];
-        const Vec3& c = poly.verts[t.c];
-        double v6 = (double)Vec3::dot(a, Vec3::cross(b, c));
-        sum += std::fabs(v6);
-    }
-    double vol = sum / 6.0;
-    return (float)vol;
 }
 
 enum class SpawnShape {
@@ -463,437 +70,8 @@ enum class SpawnMode {
     PlaceStatic,
 };
 
-struct RayHit {
-    bool hit = false;
-    float t = 0.0f;
-    Vec3 point = {0, 0, 0};
-    Vec3 normal = {0, 1, 0};
-};
-
-static bool raySphere(const Vec3& ro, const Vec3& rd, const Vec3& c, float r, float& outT, Vec3& outN) {
-    Vec3 oc = ro - c;
-    float b = Vec3::dot(oc, rd);
-    float cterm = Vec3::dot(oc, oc) - r * r;
-    float disc = b * b - cterm;
-    if (disc < 0.0f) return false;
-    float s = std::sqrt(disc);
-    float t0 = -b - s;
-    float t1 = -b + s;
-    float t = (t0 > 1e-5f) ? t0 : ((t1 > 1e-5f) ? t1 : -1.0f);
-    if (t <= 0.0f) return false;
-    Vec3 p = ro + rd * t;
-    outN = (p - c).normalized();
-    outT = t;
-    return true;
-}
-
-static bool rayObbBox(const Vec3& ro, const Vec3& rd, const Vec3& c, const Quat& q, const Vec3& he, float& outT, Vec3& outN) {
-    Vec3 roL = q.rotateInv(ro - c);
-    Vec3 rdL = q.rotateInv(rd);
-
-    float tmin = -1e30f;
-    float tmax = 1e30f;
-    Vec3 nEnter = {0.0f, 0.0f, 0.0f};
-
-    auto slab = [&](float roA, float rdA, float minA, float maxA, const Vec3& nNeg, const Vec3& nPos) -> bool {
-        if (std::fabs(rdA) < 1e-8f) {
-            return (roA >= minA && roA <= maxA);
-        }
-        float inv = 1.0f / rdA;
-        float t0 = (minA - roA) * inv;
-        float t1 = (maxA - roA) * inv;
-        Vec3 n0 = nNeg;
-        Vec3 n1 = nPos;
-        if (t0 > t1) { std::swap(t0, t1); std::swap(n0, n1); }
-        if (t0 > tmin) { tmin = t0; nEnter = n0; }
-        if (t1 < tmax) { tmax = t1; }
-        return tmin <= tmax;
-    };
-
-    if (!slab(roL.x, rdL.x, -he.x, he.x, Vec3{-1, 0, 0}, Vec3{1, 0, 0})) return false;
-    if (!slab(roL.y, rdL.y, -he.y, he.y, Vec3{0, -1, 0}, Vec3{0, 1, 0})) return false;
-    if (!slab(roL.z, rdL.z, -he.z, he.z, Vec3{0, 0, -1}, Vec3{0, 0, 1})) return false;
-
-    float t = (tmin > 1e-5f) ? tmin : tmax;
-    if (t <= 1e-5f) return false;
-    outT = t;
-    outN = q.rotate(nEnter).normalized();
-    return true;
-}
-
-static bool rayTri(const Vec3& ro, const Vec3& rd, const Vec3& a, const Vec3& b, const Vec3& c, float& outT, Vec3& outN) {
-    Vec3 ab = b - a;
-    Vec3 ac = c - a;
-    Vec3 pvec = Vec3::cross(rd, ac);
-    float det = Vec3::dot(ab, pvec);
-    if (std::fabs(det) < 1e-8f) return false;
-    float invDet = 1.0f / det;
-    Vec3 tvec = ro - a;
-    float u = Vec3::dot(tvec, pvec) * invDet;
-    if (u < 0.0f || u > 1.0f) return false;
-    Vec3 qvec = Vec3::cross(tvec, ab);
-    float v = Vec3::dot(rd, qvec) * invDet;
-    if (v < 0.0f || (u + v) > 1.0f) return false;
-    float t = Vec3::dot(ac, qvec) * invDet;
-    if (t <= 1e-5f) return false;
-
-    Vec3 n = Vec3::cross(ab, ac).normalized();
-    if (Vec3::dot(n, rd) > 0.0f) n = -n;
-    outT = t;
-    outN = n;
-    return true;
-}
-
-static bool rayMesh(const Vec3& roW, const Vec3& rdW, const Vec3& posW, const Quat& qW, const TriangleMesh& mesh, float& outT, Vec3& outN) {
-    float tS;
-    Vec3 nS;
-    if (!raySphere(roW, rdW, posW + qW.rotate(mesh.localCenter()), mesh.boundRadius, tS, nS)) {
-        return false;
-    }
-
-    Vec3 ro = qW.rotateInv(roW - posW);
-    Vec3 rd = qW.rotateInv(rdW);
-
-    float bestT = 1e30f;
-    Vec3 bestN = {0, 1, 0};
-
-    for (const auto& t : mesh.tris) {
-        if (t.a >= mesh.vertices.size() || t.b >= mesh.vertices.size() || t.c >= mesh.vertices.size()) continue;
-        const Vec3& a = mesh.vertices[t.a];
-        const Vec3& b = mesh.vertices[t.b];
-        const Vec3& c = mesh.vertices[t.c];
-        float tt;
-        Vec3 nn;
-        if (!rayTri(ro, rd, a, b, c, tt, nn)) continue;
-        if (tt < bestT) { bestT = tt; bestN = nn; }
-    }
-
-    if (bestT >= 1e29f) return false;
-    outT = bestT;
-    outN = qW.rotate(bestN).normalized();
-    return true;
-}
-
-static float placementOffsetAlongNormal(const Collider& c, const Quat& q, const Vec3& nWorld) {
-    Vec3 n = nWorld.normalized();
-    if (c.type == ColliderType::Mesh) {
-        const TriangleMesh* meshPtr = c.renderMesh ? c.renderMesh.get() : c.mesh.get();
-        if (!meshPtr || meshPtr->vertices.empty()) {
-            return std::max(0.01f, c.boundingRadius());
-        }
-        float minD = +1e30f;
-        for (const Vec3& vLocal : meshPtr->vertices) {
-            Vec3 vWorld = q.rotate(vLocal);
-            float d = Vec3::dot(vWorld, n);
-            if (d < minD) minD = d;
-        }
-        if (!std::isfinite(minD)) return std::max(0.01f, c.boundingRadius());
-        float offset = -minD;
-        if (!std::isfinite(offset)) offset = c.boundingRadius();
-        return std::max(0.01f, offset);
-    }
-    Vec3 nLocal = q.rotateInv(n);
-    Vec3 pLocal = c.support(nLocal);
-    Vec3 pWorld = q.rotate(pLocal);
-    float d = Vec3::dot(pWorld, n);
-    if (!std::isfinite(d)) d = c.boundingRadius();
-    return std::max(0.01f, d);
-}
-
-static RayHit raycastWorldPlacement(const Vec3& ro, const Vec3& rd, float floorY, const std::list<RigidBody>& bodies) {
-    RayHit best;
-    best.hit = false;
-    best.t = 1e30f;
-
-    if (std::fabs(rd.y) > 1e-8f) {
-        float t = (floorY - ro.y) / rd.y;
-        if (t > 1e-5f && t < best.t) {
-            best.hit = true;
-            best.t = t;
-            best.point = ro + rd * t;
-            best.normal = {0.0f, 1.0f, 0.0f};
-        }
-    }
-
-    for (const RigidBody& b : bodies) {
-        const Collider& c = b.collider;
-
-        float tS;
-        Vec3 nS;
-        float br = c.boundingRadius();
-        if (br > 0.0f) {
-            if (!raySphere(ro, rd, b.position, br, tS, nS)) {
-                continue;
-            }
-        }
-
-        float t = 0.0f;
-        Vec3 n = {0.0f, 1.0f, 0.0f};
-        bool hit = false;
-
-        switch (c.type) {
-            case ColliderType::Sphere:
-                hit = raySphere(ro, rd, b.position, c.sphere.radius, t, n);
-                break;
-            case ColliderType::Box:
-                hit = rayObbBox(ro, rd, b.position, b.orientation, c.box.halfExtents, t, n);
-                break;
-            case ColliderType::Capsule:
-            case ColliderType::Convex:
-            case ColliderType::Compound:
-                hit = raySphere(ro, rd, b.position, br, t, n);
-                break;
-            case ColliderType::Mesh:
-                if (c.mesh) {
-                    const TriangleMesh& mesh = c.renderMesh ? *c.renderMesh : *c.mesh;
-                    hit = rayMesh(ro, rd, b.position, b.orientation, mesh, t, n);
-                }
-                break;
-        }
-
-        if (hit && t > 1e-5f && t < best.t) {
-            best.hit = true;
-            best.t = t;
-            best.point = ro + rd * t;
-            best.normal = n;
-        }
-    }
-
-    return best;
-}
-
-static std::shared_ptr<TriangleMesh> makeTorusMesh(float majorRadius, float minorRadius, int majorSegments, int minorSegments) {
-    std::vector<Vec3> vertices;
-    std::vector<uint32_t> indices;
-
-    for (int i = 0; i <= majorSegments; ++i) {
-        float u = (float)i / majorSegments * 2.0f * 3.14159f;
-        float cosU = cosf(u);
-        float sinU = sinf(u);
-
-        for (int j = 0; j <= minorSegments; ++j) {
-            float v = (float)j / minorSegments * 2.0f * 3.14159f;
-            float cosV = cosf(v);
-            float sinV = sinf(v);
-
-            float x = (majorRadius + minorRadius * cosV) * cosU;
-            float y = minorRadius * sinV;
-            float z = (majorRadius + minorRadius * cosV) * sinU;
-
-            vertices.push_back({x, y, z});
-        }
-    }
-
-    for (int i = 0; i < majorSegments; ++i) {
-        for (int j = 0; j < minorSegments; ++j) {
-            int nextI = (i + 1);
-            
-            int a = i * (minorSegments + 1) + j;
-            int b = nextI * (minorSegments + 1) + j;
-            int c = nextI * (minorSegments + 1) + (j + 1);
-            int d = i * (minorSegments + 1) + (j + 1);
-
-            indices.push_back(a);
-            indices.push_back(d);
-            indices.push_back(c);
-
-            indices.push_back(a);
-            indices.push_back(c);
-            indices.push_back(b);
-        }
-    }
-
-    auto mesh = std::make_shared<TriangleMesh>();
-    mesh->build(vertices, indices);
-    return mesh;
-}
-
-static std::shared_ptr<TriangleMesh> makeRampMesh(float width, float length, float height) {
-    float w = std::max(0.01f, width);
-    float l = std::max(0.01f, length);
-    float h = std::max(0.0f, height);
-
-    std::vector<Vec3> v;
-    v.reserve(6);
-    v.push_back({-0.5f * w, 0.0f, -0.5f * l});
-    v.push_back({+0.5f * w, 0.0f, -0.5f * l});
-    v.push_back({+0.5f * w, 0.0f, +0.5f * l});
-    v.push_back({-0.5f * w, 0.0f, +0.5f * l});
-    v.push_back({+0.5f * w, h,    +0.5f * l});
-    v.push_back({-0.5f * w, h,    +0.5f * l});
-
-    std::vector<uint32_t> idx;
-    idx.reserve(10 * 3);
-    idx.insert(idx.end(), {0, 4, 1, 0, 5, 4});
-    idx.insert(idx.end(), {0, 3, 5});
-    idx.insert(idx.end(), {1, 4, 2});
-    idx.insert(idx.end(), {2, 4, 5, 2, 5, 3});
-    idx.insert(idx.end(), {0, 1, 2, 0, 2, 3});
-
-    auto m = std::make_shared<TriangleMesh>();
-    m->build(v, idx);
-    m->flags |= TriangleMesh::CollideUpwardOnly;
-    return m;
-}
-
-static std::shared_ptr<TriangleMesh> makeRampCollisionMesh(float width, float length, float height) {
-    float w = std::max(0.01f, width);
-    float l = std::max(0.01f, length);
-    float h = std::max(0.0f, height);
-
-    std::vector<Vec3> v;
-    v.reserve(6);
-    v.push_back({-0.5f * w, 0.0f, -0.5f * l});
-    v.push_back({+0.5f * w, 0.0f, -0.5f * l});
-    v.push_back({+0.5f * w, 0.0f, +0.5f * l});
-    v.push_back({-0.5f * w, 0.0f, +0.5f * l});
-    v.push_back({+0.5f * w, h,    +0.5f * l});
-    v.push_back({-0.5f * w, h,    +0.5f * l});
-
-    std::vector<uint32_t> idx;
-    idx.reserve(10 * 3);
-    idx.insert(idx.end(), {0, 4, 1, 0, 5, 4});
-    idx.insert(idx.end(), {0, 3, 5});
-    idx.insert(idx.end(), {1, 4, 2});
-    idx.insert(idx.end(), {2, 4, 5, 2, 5, 3});
-    idx.insert(idx.end(), {0, 1, 2, 0, 2, 3});
-
-    auto m = std::make_shared<TriangleMesh>();
-    m->build(v, idx);
-    return m;
-}
-
-static std::vector<Vec3> makeTetraVerts(float s) {
-    return {
-        {s, s, s},
-        {-s, -s, s},
-        {-s, s, -s},
-        {s, -s, -s},
-    };
-}
-
-static std::vector<Vec3> makePentagonalBipyramidVerts(float s) {
-    float h = 1.0f * s;
-    float r = 0.85f * s;
-    std::vector<Vec3> v;
-    v.reserve(7);
-    v.push_back({0.0f, h, 0.0f});
-    v.push_back({0.0f, -h, 0.0f});
-    for (int i = 0; i < 5; ++i) {
-        float a = (float)i * 2.0f * 3.14159265f / 5.0f;
-        v.push_back({r * cosf(a), 0.0f, r * sinf(a)});
-    }
-    return v;
-}
-
-static std::vector<Vec3> makeDodecaVerts(float s) {
-    const float phi = (1.0f + sqrtf(5.0f)) * 0.5f;
-    const float invPhi = 1.0f / phi;
-
-    std::vector<Vec3> v;
-    v.reserve(20);
-
-    for (int sx = -1; sx <= 1; sx += 2) {
-        for (int sy = -1; sy <= 1; sy += 2) {
-            for (int sz = -1; sz <= 1; sz += 2) {
-                v.push_back({(float)sx * s, (float)sy * s, (float)sz * s});
-            }
-        }
-    }
-    
-    for (int sy = -1; sy <= 1; sy += 2) {
-        for (int sz = -1; sz <= 1; sz += 2) {
-            v.push_back({0.0f, (float)sy * invPhi * s, (float)sz * phi * s});
-        }
-    }
-    for (int sx = -1; sx <= 1; sx += 2) {
-        for (int sy = -1; sy <= 1; sy += 2) {
-            v.push_back({(float)sx * invPhi * s, (float)sy * phi * s, 0.0f});
-        }
-    }
-    for (int sx = -1; sx <= 1; sx += 2) {
-        for (int sz = -1; sz <= 1; sz += 2) {
-            v.push_back({(float)sx * phi * s, 0.0f, (float)sz * invPhi * s});
-        }
-    }
-
-    for (Vec3& p : v) p = p * s;
-    return v;
-}
-
-static bool uiRadio(Rectangle r, const char* text, bool selected) {
-    if (uiIsBlocked()) return false;
-    Vector2 m = GetMousePosition();
-    bool hot = CheckCollisionPointRec(m, r);
-    Color bg = hot ? Color{45, 45, 45, 255} : Color{25, 25, 25, 255};
-    DrawRectangleRec(r, bg);
-    DrawRectangleLinesEx(r, 1.0f, Color{70, 70, 70, 255});
-
-    Rectangle c = {r.x + 6, r.y + 7, 14, 14};
-    DrawRectangleLinesEx(c, 1.0f, RAYWHITE);
-    if (selected) {
-        DrawRectangle((int)c.x + 3, (int)c.y + 3, (int)c.width - 6, (int)c.height - 6, RAYWHITE);
-    }
-    DrawText(text, (int)(r.x + 26), (int)(r.y + 5), 18, RAYWHITE);
-
-    return hot && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-}
-
-static bool uiButton(Rectangle r, const char* text) {
-    if (uiIsBlocked()) return false;
-    Vector2 m = GetMousePosition();
-    bool hot = CheckCollisionPointRec(m, r);
-    Color bg = hot ? Color{45, 45, 45, 255} : Color{25, 25, 25, 255};
-    DrawRectangleRec(r, bg);
-    DrawRectangleLinesEx(r, 1.0f, Color{70, 70, 70, 255});
-
-    int tw = MeasureText(text, 18);
-    int tx = (int)(r.x + 0.5f * (r.width - (float)tw));
-    int ty = (int)(r.y + 0.5f * (r.height - 18.0f));
-    DrawText(text, tx, ty, 18, RAYWHITE);
-    return hot && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-}
-
-static float uiSlider(int id, Rectangle r, float value, float minV, float maxV, bool& changed) {
-    if (uiIsBlocked()) return value;
-    Vector2 m = GetMousePosition();
-    bool hot = CheckCollisionPointRec(m, r);
-    static bool dragging = false;
-    static int dragId = -1;
-
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && hot) {
-        dragging = true;
-        dragId = id;
-    }
-    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && dragging && dragId == id) {
-        dragging = false;
-        dragId = -1;
-    }
-
-    float t = (maxV > minV) ? ((value - minV) / (maxV - minV)) : 0.0f;
-    t = std::clamp(t, 0.0f, 1.0f);
-
-    DrawRectangleRec(r, Color{25, 25, 25, 255});
-    DrawRectangleLinesEx(r, 1.0f, Color{70, 70, 70, 255});
-    Rectangle fill = {r.x, r.y, r.width * t, r.height};
-    DrawRectangleRec(fill, Color{60, 60, 60, 255});
-
-    float knobX = r.x + r.width * t;
-    DrawRectangle((int)(knobX - 3), (int)r.y - 2, 6, (int)r.height + 4, RAYWHITE);
-
-    if (dragging && dragId == id) {
-        float nt = (m.x - r.x) / r.width;
-        nt = std::clamp(nt, 0.0f, 1.0f);
-        float nv = minV + (maxV - minV) * nt;
-        if (fabsf(nv - value) > 1e-6f) {
-            value = nv;
-            changed = true;
-        }
-    }
-    return value;
-}
-
 int main() {
+    DemoState state;
     const float FIXED_DT = 1.0f / 60.0f;
     float accumulator = 0.0f;
 
@@ -901,11 +79,12 @@ int main() {
     
     PhysicsWorld physicsWorld;
     std::list<RigidBody> dynamicBodies;
+    PhysicsFactory physicsFactory(physicsWorld, dynamicBodies);
     std::vector<SoftBody> cloths;
     std::unordered_map<const RigidBody*, Renderer::RenderStyle> bodyStyles;
     static std::unordered_map<int, std::shared_ptr<TriangleMesh>> torusRenderCache;
 
-    std::vector<MaterialProps> presetMaterials = loadMaterialsFromFolder("materials");
+    std::vector<MaterialProps> presetMaterials = MaterialLoader::loadMaterialsFromFolder("materials");
     MaterialProps customTemplate;
     customTemplate.name = "Custom";
     customTemplate.color = Color{155, 155, 155, 255};
@@ -941,7 +120,22 @@ int main() {
     int windowedH = 720;
     int windowedX = 0;
     int windowedY = 0;
-    {
+
+    bool isPaused = false;
+    bool singleStep = false;
+    float timeScale = 1.0f;
+
+    auto resetScene = [&]() {
+        dynamicBodies.clear();
+        physicsWorld.bodies.clear();
+        cloths.clear();
+        physicsWorld.springs.clear();
+        physicsWorld.ballSocketJoints.clear();
+        physicsWorld.hingeJoints.clear();
+        bodyStyles.clear();
+        state.carBody = nullptr;
+        state.activeBlobIndex = -1;
+
         auto findMaterialByPrefix = [&](const char* prefix) -> const MaterialProps* {
             for (const auto& m : presetMaterials) {
                 if (m.name.rfind(prefix, 0) == 0) return &m;
@@ -952,10 +146,10 @@ int main() {
         const MaterialProps* woodMat = findMaterialByPrefix("Wood");
         const MaterialProps wallMaterial = woodMat ? *woodMat : customTemplate;
 
-        constexpr int wallW = 8;
-        constexpr int wallH = 8;
+        constexpr int wallW = 10;
+        constexpr int wallH = 10;
         constexpr int wallD = 2;
-        const Vec3 half = {0.5f, 0.5f, 0.5f};
+        const Vec3 half = {0.25f, 0.25f, 0.25f};
         const float spacingX = half.x * 2.0f;
         const float spacingY = half.y * 2.0f;
         const float spacingZ = half.z * 2.0f;
@@ -967,37 +161,156 @@ int main() {
         for (int z = 0; z < wallD; ++z) {
             for (int y = 0; y < wallH; ++y) {
                 for (int x = 0; x < wallW; ++x) {
-                    RigidBody b;
-                    b.position = {baseX + x * spacingX, baseY + y * spacingY, baseZ + z * spacingZ};
-                    b.velocity = {0.0f, 0.0f, 0.0f};
-                    b.angularVelocity = {0.0f, 0.0f, 0.0f};
-                    b.orientation = Quat::identity();
+                    Vec3 pos = {baseX + x * spacingX, baseY + y * spacingY, baseZ + z * spacingZ};
+                    
                     const float volume = (half.x * 2.0f) * (half.y * 2.0f) * (half.z * 2.0f);
-                    b.mass = std::max(0.05f, std::max(1.0f, wallMaterial.density) * std::max(0.0f, volume));
-                    b.friction = std::clamp(wallMaterial.friction, 0.0f, 2.0f);
-                    b.restitution = std::clamp(wallMaterial.restitution, 0.0f, 1.0f);
-                    b.collider = Collider::createBox(half);
-                    b.isStatic = false;
-                    b.sleeping = true;
-                    b.sleepTimer = 1.0f;
+                    float mass = std::max(0.05f, std::max(1.0f, wallMaterial.density) * std::max(0.0f, volume));
+                    
+                    RigidBody* rb = physicsFactory.CreateBox(pos, half, wallMaterial, mass, false, {0,0,0});
+                    rb->sleeping = true;
+                    rb->sleepTimer = 1.0f;
 
-                    dynamicBodies.push_back(b);
-                    physicsWorld.addRigidBody(&dynamicBodies.back());
-                    {
-                        const RigidBody* rb = &dynamicBodies.back();
-                        Renderer::RenderStyle st;
-                        st.color = applyOpacity(wallMaterial.color, wallMaterial.opacity);
-                        st.outline = wallMaterial.outline;
-                        bodyStyles[rb] = st;
-                    }
+                    Renderer::RenderStyle st;
+                    st.color = applyOpacity(wallMaterial.color, wallMaterial.opacity);
+                    st.outline = wallMaterial.outline;
+                    bodyStyles[rb] = st;
                 }
             }
         }
-    }
+    };
+
+    resetScene();
 
     SetExitKey(0);
 
     while (!WindowShouldClose()) {
+        auto removeRigidBody = [&](RigidBody* victim) {
+            if (!victim) return;
+
+            physicsWorld.springs.erase(
+                std::remove_if(
+                    physicsWorld.springs.begin(),
+                    physicsWorld.springs.end(),
+                    [&](const Spring& s) { return s.a == victim || s.b == victim; }),
+                physicsWorld.springs.end());
+
+            physicsWorld.ballSocketJoints.erase(
+                std::remove_if(
+                    physicsWorld.ballSocketJoints.begin(),
+                    physicsWorld.ballSocketJoints.end(),
+                    [&](const BallSocketJoint& j) { return j.a == victim || j.b == victim; }),
+                physicsWorld.ballSocketJoints.end());
+
+            physicsWorld.hingeJoints.erase(
+                std::remove_if(
+                    physicsWorld.hingeJoints.begin(),
+                    physicsWorld.hingeJoints.end(),
+                    [&](const HingeJoint& j) { return j.a == victim || j.b == victim; }),
+                physicsWorld.hingeJoints.end());
+
+            physicsWorld.bodies.erase(
+                std::remove(physicsWorld.bodies.begin(), physicsWorld.bodies.end(), victim),
+                physicsWorld.bodies.end());
+
+            if (state.carBody == victim) state.carBody = nullptr;
+
+            bodyStyles.erase(victim);
+
+            for (auto it = dynamicBodies.begin(); it != dynamicBodies.end(); ++it) {
+                if (&(*it) == victim) {
+                    dynamicBodies.erase(it);
+                    break;
+                }
+            }
+        };
+
+        if (IsKeyPressed(KEY_K)) {
+            auto it = dynamicBodies.begin();
+            while (it != dynamicBodies.end()) {
+                if (!it->isStatic) {
+                    it = dynamicBodies.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            physicsWorld.bodies.clear();
+            for (auto& b : dynamicBodies) {
+                physicsWorld.addRigidBody(&b);
+            }
+            cloths.clear();
+            physicsWorld.springs.clear();
+            physicsWorld.ballSocketJoints.clear();
+            physicsWorld.hingeJoints.clear();
+            state.carBody = nullptr;
+            state.activeBlobIndex = -1;
+        }
+
+        if (!UI::isBlocked() && (IsKeyPressed(KEY_X) || IsKeyPressed(KEY_DELETE))) {
+            Vec3 camPos = renderer.getCameraPosition();
+            Vec3 camFwd = renderer.getCameraForward();
+            if (camFwd.lengthSq() > 1e-12f) camFwd = camFwd.normalized();
+
+            int softIndex = -1;
+            float softT = 1e30f;
+            {
+                float t = 0.0f;
+                Vec3 n = {0.0f, 1.0f, 0.0f};
+                for (int i = 0; i < (int)cloths.size(); ++i) {
+                    const SoftBody& sb = cloths[i];
+                    if (sb.boundsRadius <= 0.0f) continue;
+                    if (Raycast::raySphere(camPos, camFwd, sb.boundsCenter, sb.boundsRadius, t, n)) {
+                        if (t > 1e-5f && t < softT) {
+                            softT = t;
+                            softIndex = i;
+                        }
+                    }
+                }
+            }
+
+            Raycast::BodyPick pick = Raycast::pickBody(camPos, camFwd, dynamicBodies);
+            const bool hitSoft = (softIndex >= 0 && softT < (pick.hit ? pick.t : 1e30f));
+
+            if (hitSoft) {
+                SoftBody& sb = cloths[softIndex];
+                std::vector<RigidBody*> victims;
+                victims.reserve(sb.particles.size());
+                for (RigidBody* p : sb.particles) {
+                    if (p) victims.push_back(p);
+                }
+                for (RigidBody* p : victims) {
+                    removeRigidBody(p);
+                }
+
+                cloths.erase(cloths.begin() + softIndex);
+
+                if (state.activeBlobIndex == softIndex) state.activeBlobIndex = -1;
+                else if (state.activeBlobIndex > softIndex) state.activeBlobIndex -= 1;
+                state.carBody = nullptr;
+            } else if (pick.hit && pick.body) {
+                removeRigidBody(pick.body);
+                state.activeBlobIndex = -1;
+            }
+        }
+
+        if (IsKeyPressed(KEY_R)) {
+            resetScene();
+        }
+
+        if (IsKeyPressed(KEY_P)) {
+            isPaused = !isPaused;
+        }
+
+        if (IsKeyPressed(KEY_PERIOD) && isPaused) {
+            singleStep = true;
+        }
+
+        if (IsKeyPressed(KEY_LEFT_BRACKET)) {
+            timeScale = std::max(0.1f, timeScale - 0.1f);
+        }
+        if (IsKeyPressed(KEY_RIGHT_BRACKET)) {
+            timeScale = std::min(5.0f, timeScale + 0.1f);
+        }
+
         if ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_ENTER)) {
             if (!IsWindowFullscreen()) {
                 windowedW = GetScreenWidth();
@@ -1020,7 +333,13 @@ int main() {
         }
         float frameTime = getDeltaTime();
         if (frameTime > 0.25f) frameTime = 0.25f;
-        accumulator += frameTime;
+        
+        if (!isPaused) {
+            accumulator += frameTime * timeScale;
+        } else if (singleStep) {
+            accumulator += FIXED_DT;
+            singleStep = false;
+        }
 
         physicsWorld.floorFriction = std::clamp(floorMaterial.friction, 0.0f, 2.0f);
         physicsWorld.floorRestitution = std::clamp(floorMaterial.restitution, 0.0f, 1.0f);
@@ -1040,7 +359,7 @@ int main() {
                 if (spawnMode == SpawnMode::Throw) {
                     startPos = camPos + camFwd * 2.0f;
                 } else {
-                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
                     if (hit.hit) {
                         startPos = hit.point + hit.normal * 0.1f;
                     } else {
@@ -1053,121 +372,53 @@ int main() {
                 if (spawnMode == SpawnMode::PlaceStatic) {
                     startPos.y += (float)(chainLength - 1) * spacing;
                 }
+                
+                Vec3 vel = {0,0,0};
+                if (spawnMode == SpawnMode::Throw) {
+                    vel = camFwd * 10.0f;
+                }
 
-                RigidBody* prev = nullptr;
-
-                for (int i = 0; i < chainLength; ++i) {
-                    RigidBody b;
-                    b.position = startPos + Vec3{0.0f, -i * spacing, 0.0f};
-                    b.collider = Collider::createSphere(radius);
-                    
-                    float density = std::max(1.0f, currentMaterial.density);
-                    float volume = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
-                    b.mass = std::max(0.05f, density * volume);
-                    
-                    b.restitution = currentMaterial.restitution;
-                    b.friction = currentMaterial.friction;
-                    
-                    b.sleeping = false;
-                    b.sleepTimer = 0.0f;
-                    
-                    if (spawnMode == SpawnMode::Throw) {
-                        b.velocity = camFwd * 10.0f;
-                    }
-
-                    if (i == 0 && spawnMode == SpawnMode::PlaceStatic) {
-                        b.isStatic = true;
-                    }
-
-                    dynamicBodies.push_back(b);
-                    RigidBody* curr = &dynamicBodies.back();
-                    physicsWorld.addRigidBody(curr);
-
-                    Renderer::RenderStyle st;
-                    st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
-                    st.outline = currentMaterial.outline;
-                    bodyStyles[curr] = st;
-
-                    if (prev) {
-                        Vec3 anchor = (prev->position + curr->position) * 0.5f;
-                        physicsWorld.addBallSocketJoint(prev, curr, anchor);
-                    }
-                    prev = curr;
+                bool startStatic = (spawnMode == SpawnMode::PlaceStatic);
+                auto chain = physicsFactory.CreateChain(startPos, {0.0f, -1.0f, 0.0f}, chainLength, radius, spacing, currentMaterial, startStatic, vel);
+                
+                Renderer::RenderStyle st;
+                st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
+                st.outline = currentMaterial.outline;
+                
+                for (auto* b : chain) {
+                    bodyStyles[b] = st;
                 }
             } else if (currentShape == SpawnShape::Car) {
                 Vec3 startPos;
                 if (spawnMode == SpawnMode::Throw) {
                     startPos = camPos + camFwd * 2.0f;
                 } else {
-                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
                     if (hit.hit) {
                         startPos = hit.point + hit.normal * 0.5f;
                     } else {
                         startPos = camPos + camFwd * 5.0f;
                     }
                 }
-
-                RigidBody chassis{};
-                chassis.position = startPos;
-                chassis.velocity = {0.0f, 0.0f, 0.0f};
-                chassis.angularVelocity = {0.0f, 0.0f, 0.0f};
-                chassis.orientation = Quat::identity();
-
-                Vec3 chassisDim = {1.0f, 0.25f, 2.0f};
-                float wheelRadius = 0.3f;
-                Vec3 wheelOffsets[4] = {
-                    {-0.6f, -0.1f, -0.7f},
-                    { 0.6f, -0.1f, -0.7f},
-                    {-0.6f, -0.1f,  0.7f},
-                    { 0.6f, -0.1f,  0.7f}
-                };
-
-                std::vector<CompoundChild> carChildren;
-                carChildren.reserve(5);
-                {
-                    CompoundChild body;
-                    body.collider = Collider::createBox(chassisDim * 0.5f);
-                    body.localPosition = {0.0f, 0.0f, 0.0f};
-                    body.localOrientation = Quat::identity();
-                    carChildren.push_back(body);
-                }
-                for (int i = 0; i < 4; ++i) {
-                    CompoundChild w;
-                    w.collider = Collider::createSphere(wheelRadius);
-                    w.localPosition = wheelOffsets[i];
-                    w.localOrientation = Quat::identity();
-                    carChildren.push_back(w);
+                
+                bool isStatic = (spawnMode == SpawnMode::PlaceStatic);
+                Vec3 vel = {0,0,0};
+                if (spawnMode == SpawnMode::Throw) {
+                    vel = camFwd * 10.0f;
                 }
 
-                chassis.collider = Collider::createCompound(carChildren);
-                
-                float chassisVol = chassisDim.x * chassisDim.y * chassisDim.z;
-                float wheelVol = (4.0f / 3.0f) * 3.14159f * wheelRadius * wheelRadius * wheelRadius;
-                float totalVol = chassisVol + 4.0f * wheelVol;
-                chassis.mass = totalVol * currentMaterial.density;
-                
-                chassis.restitution = currentMaterial.restitution;
-                chassis.friction = currentMaterial.friction;
-                
-                if (spawnMode == SpawnMode::PlaceStatic) {
-                    chassis.isStatic = true;
-                    chassis.mass = 0.0f;
-                }
+                RigidBody* chassisPtr = physicsFactory.CreateCar(startPos, 1.0f, currentMaterial, isStatic, vel);
 
                 if (spawnMode != SpawnMode::Throw) {
                     Vec3 f = {camFwd.x, 0.0f, camFwd.z};
                     if (f.lengthSq() > 1e-8f) {
                         f = f.normalized();
                         float yaw = atan2f(f.x, f.z);
-                        chassis.orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw);
+                        chassisPtr->orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw);
                     }
                 }
-
-                dynamicBodies.push_back(chassis);
-                RigidBody* chassisPtr = &dynamicBodies.back();
-                physicsWorld.addRigidBody(chassisPtr);
                 
-                g_carBody = chassisPtr;
+                state.carBody = chassisPtr;
                 printf("Car spawned at (%.2f, %.2f, %.2f)\n", chassisPtr->position.x, chassisPtr->position.y, chassisPtr->position.z);
                 
                 Renderer::RenderStyle st;
@@ -1180,7 +431,7 @@ int main() {
                 if (spawnMode == SpawnMode::Throw) {
                     startPos = camPos + camFwd * 3.0f;
                 } else {
-                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
                     if (hit.hit) {
                         startPos = hit.point + hit.normal * 1.0f;
                     } else {
@@ -1191,90 +442,22 @@ int main() {
                 int rows = 14;
                 int cols = 14;
                 float spacing = 0.2f * std::clamp(currentSize, 0.5f, 2.0f);
-                float radius = spacing * 0.6f;
-                float stiffness = 800.0f;
-                float damping = 2.0f;
                 
-                SoftBody cloth;
-                cloth.init(rows, cols, currentMaterial.color);
-                cloth.particles.reserve(rows * cols);
-
-                static int nextGroupId = 1;
-                int clothGroupId = nextGroupId++;
-
-                for (int i = 0; i < rows; ++i) {
-                    for (int j = 0; j < cols; ++j) {
-                        RigidBody p;
-                        p.position = startPos + Vec3{(float)(j - cols/2) * spacing, 0.0f, (float)(i - rows/2) * spacing};
-                        p.velocity = {0.0f, 0.0f, 0.0f};
-                        p.orientation = Quat::identity();
-                        p.angularVelocity = {0.0f, 0.0f, 0.0f};
-                        p.collider = Collider::createSphere(radius);
-                        
-                        float vol = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
-                        p.mass = vol * currentMaterial.density;
-                        p.friction = currentMaterial.friction;
-                        p.restitution = currentMaterial.restitution;
-                        p.visible = false;
-                        p.groupId = clothGroupId;
-                        
-                        if (spawnMode == SpawnMode::Throw) {
-                            p.velocity = camFwd * 10.0f;
-                        }
-
-                        if (spawnMode == SpawnMode::PlaceStatic && i == 0) {
-                             p.isStatic = true;
-                             p.mass = 0.0f;
-                        }
-
-                        dynamicBodies.push_back(p);
-                        RigidBody* ptr = &dynamicBodies.back();
-                        physicsWorld.addRigidBody(ptr);
-                        cloth.particles.push_back(ptr);
-                    }
+                Vec3 vel = {0,0,0};
+                if (spawnMode == SpawnMode::Throw) {
+                    vel = camFwd * 10.0f;
                 }
+                
+                bool isStatic = (spawnMode == SpawnMode::PlaceStatic);
 
-                for (int i = 0; i < rows; ++i) {
-                    for (int j = 0; j < cols; ++j) {
-                        RigidBody* a = cloth.particles[i * cols + j];
-
-                        if (j + 1 < cols) {
-                            RigidBody* b = cloth.particles[i * cols + (j + 1)];
-                            physicsWorld.addSpring(a, b, spacing, stiffness, damping);
-                        }
-                        if (i + 1 < rows) {
-                            RigidBody* b = cloth.particles[(i + 1) * cols + j];
-                            physicsWorld.addSpring(a, b, spacing, stiffness, damping);
-                        }
-                        
-                        if (i + 1 < rows && j + 1 < cols) {
-                            RigidBody* b = cloth.particles[(i + 1) * cols + (j + 1)];
-                            float diag = spacing * 1.4142f;
-                            physicsWorld.addSpring(a, b, diag, stiffness, damping);
-                        }
-                        if (i + 1 < rows && j - 1 >= 0) {
-                            RigidBody* b = cloth.particles[(i + 1) * cols + (j - 1)];
-                            float diag = spacing * 1.4142f;
-                            physicsWorld.addSpring(a, b, diag, stiffness, damping);
-                        }
-                        
-                        if (j + 2 < cols) {
-                            RigidBody* b = cloth.particles[i * cols + (j + 2)];
-                            physicsWorld.addSpring(a, b, spacing * 2.0f, stiffness, damping);
-                        }
-                        if (i + 2 < rows) {
-                            RigidBody* b = cloth.particles[(i + 2) * cols + j];
-                            physicsWorld.addSpring(a, b, spacing * 2.0f, stiffness, damping);
-                        }
-                    }
-                }
+                SoftBody cloth = physicsFactory.CreateCloth(startPos, rows, cols, spacing, currentMaterial, isStatic, vel);
                 cloths.push_back(cloth);
             } else if (currentShape == SpawnShape::Blob) {
                 Vec3 startPos;
                 if (spawnMode == SpawnMode::Throw) {
                     startPos = camPos + camFwd * 3.0f;
                 } else {
-                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                    RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
                     if (hit.hit) {
                         startPos = hit.point + hit.normal * 1.5f;
                     } else {
@@ -1286,91 +469,17 @@ int main() {
                 float spacing = 0.4f * std::clamp(currentSize, 0.5f, 2.0f);
                 float radius = spacing * 0.6f;
                 
-                float particleVol = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
-                float density = std::max(1.0f, currentMaterial.density);
-                float stiffness = 6.0f * density;
-                float damping = 0.1f * density;
-
-                SoftBody blob;
-                blob.initBlob(dim, dim, dim, currentMaterial.color);
-                blob.particles.reserve(dim * dim * dim);
-
-                static int nextGroupId = 1;
-                int blobGroupId = nextGroupId++;
-
-                for (int z = 0; z < dim; ++z) {
-                    for (int y = 0; y < dim; ++y) {
-                        for (int x = 0; x < dim; ++x) {
-                            RigidBody p;
-                            p.position = startPos + Vec3{(float)(x - 1) * spacing, (float)(y - 1) * spacing, (float)(z - 1) * spacing};
-                            p.velocity = {0.0f, 0.0f, 0.0f};
-                            p.orientation = Quat::identity();
-                            p.angularVelocity = {0.0f, 0.0f, 0.0f};
-                            p.collider = Collider::createSphere(radius);
-                            
-                            float vol = (4.0f / 3.0f) * 3.14159f * radius * radius * radius;
-                            p.mass = vol * currentMaterial.density;
-                            p.friction = currentMaterial.friction;
-                            p.restitution = currentMaterial.restitution;
-                            p.visible = false;
-                            p.groupId = blobGroupId;
-                            
-                            p.useExplicitInertia = true;
-                            p.explicitInvInertia = {0.0f, 0.0f, 0.0f};
-                            
-                            if (spawnMode == SpawnMode::Throw) {
-                                p.velocity = camFwd * 10.0f;
-                            }
-                            
-                            if (spawnMode == SpawnMode::PlaceStatic) {
-                                p.isStatic = true;
-                                p.mass = 0.0f;
-                            }
-
-                            dynamicBodies.push_back(p);
-                            RigidBody* ptr = &dynamicBodies.back();
-                            physicsWorld.addRigidBody(ptr);
-                            blob.particles.push_back(ptr);
-                        }
-                    }
+                Vec3 vel = {0,0,0};
+                if (spawnMode == SpawnMode::Throw) {
+                    vel = camFwd * 10.0f;
                 }
+                
+                bool isStatic = (spawnMode == SpawnMode::PlaceStatic);
 
-                auto idx = [&](int x, int y, int z) { return z * 9 + y * 3 + x; };
-
-                for (int z = 0; z < dim; ++z) {
-                    for (int y = 0; y < dim; ++y) {
-                        for (int x = 0; x < dim; ++x) {
-                            RigidBody* a = blob.particles[idx(x, y, z)];
-
-                            if (x + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x+1, y, z)], spacing, stiffness, damping);
-                            if (y + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x, y+1, z)], spacing, stiffness, damping);
-                            if (z + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x, y, z+1)], spacing, stiffness, damping);
-
-                            float diag2 = spacing * 1.4142f;
-                            if (x + 1 < dim && y + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x+1, y+1, z)], diag2, stiffness, damping);
-                            if (x + 1 < dim && y - 1 >= 0)  physicsWorld.addSpring(a, blob.particles[idx(x+1, y-1, z)], diag2, stiffness, damping);
-                            
-                            if (y + 1 < dim && z + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x, y+1, z+1)], diag2, stiffness, damping);
-                            if (y + 1 < dim && z - 1 >= 0)  physicsWorld.addSpring(a, blob.particles[idx(x, y+1, z-1)], diag2, stiffness, damping);
-
-                            if (x + 1 < dim && z + 1 < dim) physicsWorld.addSpring(a, blob.particles[idx(x+1, y, z+1)], diag2, stiffness, damping);
-                            if (x + 1 < dim && z - 1 >= 0)  physicsWorld.addSpring(a, blob.particles[idx(x+1, y, z-1)], diag2, stiffness, damping);
-
-                            float diag3 = spacing * 1.732f;
-                            if (x + 1 < dim && y + 1 < dim && z + 1 < dim) 
-                                physicsWorld.addSpring(a, blob.particles[idx(x+1, y+1, z+1)], diag3, stiffness, damping);
-                            if (x + 1 < dim && y + 1 < dim && z - 1 >= 0) 
-                                physicsWorld.addSpring(a, blob.particles[idx(x+1, y+1, z-1)], diag3, stiffness, damping);
-                            if (x + 1 < dim && y - 1 >= 0 && z + 1 < dim) 
-                                physicsWorld.addSpring(a, blob.particles[idx(x+1, y-1, z+1)], diag3, stiffness, damping);
-                            if (x + 1 < dim && y - 1 >= 0 && z - 1 >= 0) 
-                                physicsWorld.addSpring(a, blob.particles[idx(x+1, y-1, z-1)], diag3, stiffness, damping);
-                        }
-                    }
-                }
+                SoftBody blob = physicsFactory.CreateBlob(startPos, dim, spacing, radius, currentMaterial, isStatic, vel);
                 cloths.push_back(blob);
-                g_activeBlobIndex = (int)cloths.size() - 1;
-                g_carBody = nullptr;
+                state.activeBlobIndex = (int)cloths.size() - 1;
+                state.carBody = nullptr;
             } else {
                 RigidBody b;
                 b.position = camPos + camFwd * 2.0f;
@@ -1393,81 +502,111 @@ int main() {
                     b.angularVelocity = right * (spin * (1.0f + 0.25f * spinJitter)) + up * (1.0f * spinJitter);
                 }
 
-                b.isStatic = (spawnMode == SpawnMode::PlaceStatic);
-                b.sleeping = (spawnMode != SpawnMode::Throw);
-                b.sleepTimer = (spawnMode != SpawnMode::Throw) ? 1.0f : 0.0f;
-
-                b.friction = std::clamp(currentMaterial.friction, 0.0f, 2.0f);
-                b.restitution = std::clamp(currentMaterial.restitution, 0.0f, 1.0f);
-
-                float volume = 0.0f;
                 float s = std::clamp(currentSize, 0.10f, 1.25f);
+                
+                Vec3 vel = {0,0,0};
+                Vec3 angVel = {0,0,0};
+                Quat orientation = Quat::identity();
+                
+                if (spawnMode == SpawnMode::Throw) {
+                    vel = camFwd * 10.0f;
+                    float tiltDeg = (float)GetRandomValue(-5, 5);
+                    float rollDeg = (float)GetRandomValue(-5, 5);
+                    Quat qTilt = Quat::fromAxisAngle(right, tiltDeg * DEG2RAD);
+                    Quat qRoll = Quat::fromAxisAngle(camFwd, rollDeg * DEG2RAD);
+                    orientation = (qRoll * qTilt).normalized();
+
+                    float spin = 7.0f;
+                    float spinJitter = (float)GetRandomValue(-5, 5) / 5.0f;
+                    angVel = right * (spin * (1.0f + 0.25f * spinJitter)) + up * (1.0f * spinJitter);
+                }
+
+                bool isStatic = (spawnMode == SpawnMode::PlaceStatic);
+                
+                // Calculate mass based on volume and density
+                float density = std::max(1.0f, currentMaterial.density);
+                float mass = 1.0f; // Placeholder, will be calculated inside factory or here if needed
+                
+                // Helper to calculate volume for simple shapes
+                auto calcVolume = [&](float vol) {
+                    return std::max(0.05f, density * vol);
+                };
+
+                RigidBody* rb = nullptr;
+
                 switch (currentShape) {
                     case SpawnShape::Sphere: {
-                        b.collider = Collider::createSphere(s);
-                        volume = (4.0f / 3.0f) * 3.14159265f * s * s * s;
+                        float vol = (4.0f / 3.0f) * 3.14159265f * s * s * s;
+                        rb = physicsFactory.CreateSphere(b.position, s, currentMaterial, calcVolume(vol), isStatic, vel);
                         break;
                     }
                     case SpawnShape::Cube: {
-                        b.collider = Collider::createBox({s, s, s});
-                        volume = (2.0f * s) * (2.0f * s) * (2.0f * s);
+                        float vol = (2.0f * s) * (2.0f * s) * (2.0f * s);
+                        rb = physicsFactory.CreateBox(b.position, {s, s, s}, currentMaterial, calcVolume(vol), isStatic, vel);
                         break;
                     }
                     case SpawnShape::Capsule: {
                         float r = s;
                         float hh = 1.5f * s;
-                        b.collider = Collider::createCapsule(r, hh);
                         float cylH = 2.0f * hh;
-                        volume = 3.14159265f * r * r * cylH + (4.0f / 3.0f) * 3.14159265f * r * r * r;
+                        float vol = 3.14159265f * r * r * cylH + (4.0f / 3.0f) * 3.14159265f * r * r * r;
+                        rb = physicsFactory.CreateCapsule(b.position, r, hh, currentMaterial, calcVolume(vol), isStatic, vel);
                         break;
                     }
                     case SpawnShape::Tetrahedron: {
-                        auto verts = makeTetraVerts(s);
-                        b.collider = Collider::createConvex(verts);
-                        volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
+                        auto verts = MeshGen::makeTetraVerts(s);
+
+                        rb = physicsFactory.CreateConvex(b.position, verts, currentMaterial, 1.0f, isStatic, vel);
+                        if (rb->collider.polyhedron) {
+                            float vol = rb->collider.polyhedron->computeVolume();
+                            rb->mass = calcVolume(vol);
+                            if (isStatic) rb->mass = 0.0f;
+                        }
                         break;
                     }
                     case SpawnShape::Bipyramid: {
-                        auto verts = makePentagonalBipyramidVerts(s);
-                        b.collider = Collider::createConvex(verts);
-                        volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
+                        auto verts = MeshGen::makePentagonalBipyramidVerts(s);
+                        rb = physicsFactory.CreateConvex(b.position, verts, currentMaterial, 1.0f, isStatic, vel);
+                        if (rb->collider.polyhedron) {
+                            float vol = rb->collider.polyhedron->computeVolume();
+                            rb->mass = calcVolume(vol);
+                            if (isStatic) rb->mass = 0.0f;
+                        }
                         break;
                     }
                     case SpawnShape::Dodecahedron: {
-                        auto verts = makeDodecaVerts(s);
-                        b.collider = Collider::createConvex(verts);
-                        volume = b.collider.polyhedron ? computePolyhedronVolume(*b.collider.polyhedron) : 0.0f;
+                        auto verts = MeshGen::makeDodecaVerts(s);
+                        rb = physicsFactory.CreateConvex(b.position, verts, currentMaterial, 1.0f, isStatic, vel);
+                        if (rb->collider.polyhedron) {
+                            float vol = rb->collider.polyhedron->computeVolume();
+                            rb->mass = calcVolume(vol);
+                            if (isStatic) rb->mass = 0.0f;
+                        }
                         break;
                     }
                     case SpawnShape::Ramp: {
                         float width = 2.5f * s;
                         float length = 4.0f * s;
                         float height = 1.4f * s;
-                        auto rampRender = makeRampMesh(width, length, height);
-                        auto rampCollision = shiftDown ? rampRender : makeRampCollisionMesh(width, length, height);
-                        b.collider = Collider::createMesh(rampCollision, rampRender);
+                        auto rampRender = MeshGen::makeRampMesh(width, length, height);
+                        auto rampCollision = shiftDown ? rampRender : MeshGen::makeRampCollisionMesh(width, length, height);
 
                         Vec3 f = {camFwd.x, 0.0f, camFwd.z};
                         if (f.lengthSq() < 1e-8f) f = {0.0f, 0.0f, 1.0f};
                         f = f.normalized();
                         float yaw = atan2f(f.x, f.z);
-                        Quat qYaw = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw);
-                        b.orientation = qYaw.normalized();
-
-                        if (spawnMode == SpawnMode::Throw) {
-                            b.position = camPos + camFwd * 2.0f;
-                            b.velocity = camFwd * 10.0f;
-                            b.angularVelocity = {0.0f, 0.0f, 0.0f};
-                        }
-
-                        volume = width * length * std::max(0.01f, height) * 0.5f;
+                        orientation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, yaw).normalized();
+                        
+                        float vol = width * length * std::max(0.01f, height) * 0.5f;
+                        rb = physicsFactory.CreateMesh(b.position, rampCollision, currentMaterial, calcVolume(vol), isStatic, vel);
+                        rb->collider.renderMesh = rampRender;
                         break;
                     }
                     case SpawnShape::Torus: {
                         float majorR = s * 1.0f;
-                        float minorR = s * 0.4f;
+                        float minorR = s * 0.45f;
                         std::vector<CompoundChild> children;
-                        const int segments = 16;
+                        const int segments = 64;
                         children.reserve(segments);
 
                         auto quatFromTo = [](const Vec3& from, const Vec3& to) -> Quat {
@@ -1504,20 +643,21 @@ int main() {
                             children.push_back(child);
                         }
 
-                        b.collider = Collider::createCompound(children);
-                        volume = 2.0f * 3.14159f * 3.14159f * majorR * minorR * minorR;
+                        float vol = 2.0f * 3.14159f * 3.14159f * majorR * minorR * minorR;
+                        rb = physicsFactory.CreateCompound(b.position, children, currentMaterial, calcVolume(vol), isStatic, vel);
 
-                        // Explicit inertia tensor for Torus (approximate as thin ring + tube)
-                        // I_axis = M * (R^2 + 3/4 r^2)
-                        // I_perp = M * (1/2 R^2 + 5/8 r^2)
-                        float M = std::max(0.05f, std::max(1.0f, currentMaterial.density) * volume);
+                        // Explicit inertia tensor for Torus
+                        float M = rb->mass;
                         float R = majorR;
                         float r = minorR;
                         float I_axis = M * (R*R + 0.75f*r*r);
                         float I_perp = M * (0.5f*R*R + 0.625f*r*r);
-                        
-                        b.useExplicitInertia = true;
-                        b.explicitInvInertia = {
+                        float inertiaScale = 1.2f;
+                        I_axis *= inertiaScale;
+                        I_perp *= inertiaScale;
+
+                        rb->useExplicitInertia = true;
+                        rb->explicitInvInertia = {
                             (I_perp > 0.0001f) ? 1.0f/I_perp : 0.0f,
                             (I_axis > 0.0001f) ? 1.0f/I_axis : 0.0f, // Y is up (axis of torus)
                             (I_perp > 0.0001f) ? 1.0f/I_perp : 0.0f
@@ -1526,42 +666,26 @@ int main() {
                     }
                 }
 
-                if (spawnMode != SpawnMode::Throw) {
-                    RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                    Vec3 placePoint = camPos + camFwd * 2.0f;
-                    Vec3 placeNormal = {0.0f, 1.0f, 0.0f};
-                    if (hit.hit) {
-                        placePoint = hit.point;
-                        placeNormal = hit.normal;
+                if (rb) {
+                    rb->orientation = orientation;
+                    rb->angularVelocity = angVel;
+                    rb->sleeping = (spawnMode != SpawnMode::Throw);
+                    rb->sleepTimer = (spawnMode != SpawnMode::Throw) ? 1.0f : 0.0f;
+
+                    if (spawnMode != SpawnMode::Throw) {
+                        RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                        Vec3 placePoint = camPos + camFwd * 2.0f;
+                        Vec3 placeNormal = {0.0f, 1.0f, 0.0f};
+                        if (hit.hit) {
+                            placePoint = hit.point;
+                            placeNormal = hit.normal;
+                        }
+                        float offset = Raycast::placementOffsetAlongNormal(rb->collider, rb->orientation, placeNormal);
+                        rb->position = placePoint + placeNormal.normalized() * (offset + 0.002f);
+                        rb->velocity = {0.0f, 0.0f, 0.0f};
+                        rb->angularVelocity = {0.0f, 0.0f, 0.0f};
                     }
-                    float offset = placementOffsetAlongNormal(b.collider, b.orientation, placeNormal);
-                    b.position = placePoint + placeNormal.normalized() * (offset + 0.002f);
-                    b.velocity = {0.0f, 0.0f, 0.0f};
-                    b.angularVelocity = {0.0f, 0.0f, 0.0f};
-                }
 
-                float density = std::max(1.0f, currentMaterial.density);
-                b.mass = std::max(0.05f, density * std::max(0.0f, volume));
-
-                if (currentShape == SpawnShape::Torus) {
-                    float s = std::clamp(currentSize, 0.10f, 1.25f);
-                    float R = s * 1.0f;
-                    float r = s * 0.4f;
-                    float I_axis = b.mass * (R*R + 0.75f*r*r);
-                    float I_diam = b.mass * (0.5f*R*R + 0.625f*r*r);
-                    
-                    b.useExplicitInertia = true;
-                    b.explicitInvInertia = {
-                        (I_diam > 0.0001f) ? 1.0f/I_diam : 0.0f,
-                        (I_axis > 0.0001f) ? 1.0f/I_axis : 0.0f,
-                        (I_diam > 0.0001f) ? 1.0f/I_diam : 0.0f
-                    };
-                }
-
-                dynamicBodies.push_back(b);
-                physicsWorld.addRigidBody(&dynamicBodies.back());
-                {
-                    const RigidBody* rb = &dynamicBodies.back();
                     Renderer::RenderStyle st;
                     st.color = applyOpacity(currentMaterial.color, currentMaterial.opacity);
                     st.outline = currentMaterial.outline;
@@ -1572,8 +696,8 @@ int main() {
                         auto it = torusRenderCache.find(key);
                         if (it == torusRenderCache.end()) {
                             float majorR = s * 1.0f;
-                            float minorR = s * 0.4f;
-                            auto mesh = makeTorusMesh(majorR, minorR, 48, 16);
+                            float minorR = s * 0.45f;
+                            auto mesh = MeshGen::makeTorusMesh(majorR, minorR, 64, 16);
                             it = torusRenderCache.emplace(key, std::move(mesh)).first;
                         }
                         st.meshOverride = it->second;
@@ -1583,11 +707,11 @@ int main() {
                 }
 
                 if (currentShape == SpawnShape::Car) {
-                    g_carBody = &dynamicBodies.back();
-                    g_activeBlobIndex = -1;
+                    state.carBody = &dynamicBodies.back();
+                    state.activeBlobIndex = -1;
                 } else {
-                    g_carBody = nullptr;
-                    g_activeBlobIndex = -1;
+                    state.carBody = nullptr;
+                    state.activeBlobIndex = -1;
                 }
             }
         }
@@ -1609,8 +733,8 @@ int main() {
                 moveDir = moveDir.normalized();
                 float accelMag = 12.0f;
                 
-                if (g_activeBlobIndex >= 0 && g_activeBlobIndex < (int)cloths.size()) {
-                    auto& sb = cloths[g_activeBlobIndex];
+                if (state.activeBlobIndex >= 0 && state.activeBlobIndex < (int)cloths.size()) {
+                    auto& sb = cloths[state.activeBlobIndex];
                     if (sb.isBlob) {
                         for (RigidBody* p : sb.particles) {
                             if (p && !p->isStatic) {
@@ -1624,54 +748,54 @@ int main() {
         }
 
         // Car Controls
-        if (g_carBody && !g_carBody->isStatic) {
+        if (state.carBody && !state.carBody->isStatic) {
             const float accelForce = 60.0f;
             const float turnSpeed = 4.5f;
             const float lateralFriction = 8.0f;
             const float maxSpeed = 40.0f;
 
-            Vec3 fwd = g_carBody->orientation.rotate({0.0f, 0.0f, 1.0f});
-            Vec3 right = g_carBody->orientation.rotate({1.0f, 0.0f, 0.0f});
+            Vec3 fwd = state.carBody->orientation.rotate({0.0f, 0.0f, 1.0f});
+            Vec3 right = state.carBody->orientation.rotate({1.0f, 0.0f, 0.0f});
 
-            float currentSpeed = Vec3::dot(g_carBody->velocity, fwd);
+            float currentSpeed = Vec3::dot(state.carBody->velocity, fwd);
             if (IsKeyDown(KEY_UP)) {
                 if (currentSpeed < maxSpeed) {
-                    g_carBody->velocity += fwd * (accelForce * FIXED_DT);
+                    state.carBody->velocity += fwd * (accelForce * FIXED_DT);
                 }
-                g_carBody->sleeping = false;
+                state.carBody->sleeping = false;
             }
             if (IsKeyDown(KEY_DOWN)) {
                 if (currentSpeed > -maxSpeed) {
-                    g_carBody->velocity -= fwd * (accelForce * FIXED_DT);
+                    state.carBody->velocity -= fwd * (accelForce * FIXED_DT);
                 }
-                g_carBody->sleeping = false;
+                state.carBody->sleeping = false;
             }
 
-            float speed = g_carBody->velocity.length();
+            float speed = state.carBody->velocity.length();
             if (speed > 0.5f) {
-                float dir = Vec3::dot(g_carBody->velocity, fwd) > 0.0f ? 1.0f : -1.0f;
+                float dir = Vec3::dot(state.carBody->velocity, fwd) > 0.0f ? 1.0f : -1.0f;
                 float turnFactor = std::min(speed / 10.0f, 1.0f); 
                 
                 if (IsKeyDown(KEY_LEFT)) {
-                    g_carBody->angularVelocity.y += turnSpeed * dir * turnFactor * FIXED_DT;
-                    g_carBody->sleeping = false;
+                    state.carBody->angularVelocity.y += turnSpeed * dir * turnFactor * FIXED_DT;
+                    state.carBody->sleeping = false;
                 }
                 if (IsKeyDown(KEY_RIGHT)) {
-                    g_carBody->angularVelocity.y -= turnSpeed * dir * turnFactor * FIXED_DT;
-                    g_carBody->sleeping = false;
+                    state.carBody->angularVelocity.y -= turnSpeed * dir * turnFactor * FIXED_DT;
+                    state.carBody->sleeping = false;
                 }
             }
-            Vec3 latVel = right * Vec3::dot(g_carBody->velocity, right);
-            g_carBody->velocity -= latVel * (lateralFriction * FIXED_DT);
+            Vec3 latVel = right * Vec3::dot(state.carBody->velocity, right);
+            state.carBody->velocity -= latVel * (lateralFriction * FIXED_DT);
 
-            if (g_carBody->collider.compound) {
+            if (state.carBody->collider.compound) {
                 float wheelRadius = 0.3f;
-                float dist = Vec3::dot(g_carBody->velocity, fwd) * FIXED_DT;
+                float dist = Vec3::dot(state.carBody->velocity, fwd) * FIXED_DT;
                 float angleDelta = dist / wheelRadius;
                 
-                for (size_t i = 1; i < g_carBody->collider.compound->children.size(); ++i) {
+                for (size_t i = 1; i < state.carBody->collider.compound->children.size(); ++i) {
                     if (i > 4) break;
-                    CompoundChild& wheel = g_carBody->collider.compound->children[i];
+                    CompoundChild& wheel = state.carBody->collider.compound->children[i];
                     Quat rot = Quat::fromAxisAngle({1.0f, 0.0f, 0.0f}, angleDelta);
                     wheel.localOrientation = (wheel.localOrientation * rot).normalized();
                 }
@@ -1691,6 +815,9 @@ int main() {
                 }
             }
         }
+
+        physicsWorld.floorFriction = floorMaterial.friction;
+        physicsWorld.floorRestitution = floorMaterial.restitution;
 
         int substeps = 0;
         while (accumulator >= FIXED_DT && substeps < MAX_SUBSTEPS) {
@@ -1731,6 +858,8 @@ int main() {
                 renderer.drawRigidBody(rb, getStyle(rb));
             }
 
+            renderer.flush();
+
             std::sort(transparent.begin(), transparent.end(), [&](const RigidBody* a, const RigidBody* b) {
                 Vec3 da = a->position - camPos;
                 Vec3 db = b->position - camPos;
@@ -1742,13 +871,13 @@ int main() {
 
             for (auto& cloth : cloths) {
                 cloth.update();
-                cloth.draw();
+                cloth.draw(renderer);
             }
 
             if (spawnMode != SpawnMode::Throw) {
                 Vec3 camFwd = renderer.getCameraForward().normalized();
                 const bool shiftDown = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-                RayHit hit = raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
+                RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
                 Vec3 placePoint = camPos + camFwd * 2.0f;
                 Vec3 placeNormal = {0.0f, 1.0f, 0.0f};
                 if (hit.hit) {
@@ -1798,18 +927,18 @@ int main() {
                             ghost.collider = Collider::createCapsule(s, 1.5f * s);
                             break;
                         case SpawnShape::Tetrahedron:
-                            ghost.collider = Collider::createConvex(makeTetraVerts(s));
+                            ghost.collider = Collider::createConvex(MeshGen::makeTetraVerts(s));
                             break;
                         case SpawnShape::Bipyramid:
-                            ghost.collider = Collider::createConvex(makePentagonalBipyramidVerts(s));
+                            ghost.collider = Collider::createConvex(MeshGen::makePentagonalBipyramidVerts(s));
                             break;
                         case SpawnShape::Dodecahedron:
-                            ghost.collider = Collider::createConvex(makeDodecaVerts(s));
+                            ghost.collider = Collider::createConvex(MeshGen::makeDodecaVerts(s));
                             break;
                         case SpawnShape::Torus: {
                             float majorR = s * 1.0f;
-                            float minorR = s * 0.4f;
-                            auto torusMesh = makeTorusMesh(majorR, minorR, 48, 16);
+                            float minorR = s * 0.45f;
+                            auto torusMesh = MeshGen::makeTorusMesh(majorR, minorR, 64, 16);
                             ghost.collider = Collider::createMesh(torusMesh, torusMesh);
                             break;
                         }
@@ -1817,8 +946,8 @@ int main() {
                             float width = 2.5f * s;
                             float length = 4.0f * s;
                             float height = 1.4f * s;
-                            auto rampRender = makeRampMesh(width, length, height);
-                            auto rampCollision = shiftDown ? rampRender : makeRampCollisionMesh(width, length, height);
+                            auto rampRender = MeshGen::makeRampMesh(width, length, height);
+                            auto rampCollision = shiftDown ? rampRender : MeshGen::makeRampCollisionMesh(width, length, height);
                             ghost.collider = Collider::createMesh(rampCollision, rampRender);
                             Vec3 f = {camFwd.x, 0.0f, camFwd.z};
                             if (f.lengthSq() < 1e-8f) f = {0.0f, 0.0f, 1.0f};
@@ -1876,7 +1005,7 @@ int main() {
                         }
                     }
 
-                    float offset = placementOffsetAlongNormal(ghost.collider, ghost.orientation, placeNormal);
+                    float offset = Raycast::placementOffsetAlongNormal(ghost.collider, ghost.orientation, placeNormal);
                     ghost.position = placePoint + placeNormal.normalized() * (offset + 0.002f);
 
                     renderer.drawRigidBody(&ghost, holo);
@@ -1899,7 +1028,7 @@ int main() {
             DrawRectangleLinesEx(panel, 1.0f, Color{60, 60, 60, 255});
 
             Rectangle toggle = {panel.x + 7.0f, panel.y + 8.0f, panel.width - 14.0f, 26.0f};
-            if (uiButton(toggle, hudCollapsed ? "<" : ">")) {
+            if (UI::Button(toggle, hudCollapsed ? "<" : ">")) {
                 hudCollapsed = !hudCollapsed;
             }
 
@@ -1911,21 +1040,77 @@ int main() {
 
             const float pad = 12.0f;
             const float footerH = 42.0f;
+            const float headerH = 40.0f;
+
+            static float scrollY = 0.0f;
+            static float contentHeight = 1000.0f;
+            static int matSelIndex = 0;
+            static int floorSelIndex = 0;
+            float viewHeight = panel.height - footerH - headerH;
+
+            if (CheckCollisionPointRec(GetMousePosition(), panel)) {
+                scrollY -= GetMouseWheelMove() * 30.0f;
+            }
+            float maxScroll = std::max(0.0f, contentHeight - viewHeight);
+            scrollY = std::clamp(scrollY, 0.0f, maxScroll);
+
+            Rectangle scissorRect = {panel.x, panel.y + headerH, panel.width, viewHeight};
+            UI::setClipRect(scissorRect);
+            BeginScissorMode((int)scissorRect.x, (int)scissorRect.y, (int)scissorRect.width, (int)scissorRect.height);
             
             float x = panel.x + pad;
-            float y = pad;
+            float startY = panel.y + headerH + pad;
+            float y = startY - scrollY;
+
+            DrawText("Actions", (int)x, (int)y, 22, RAYWHITE);
+            y += 24.0f;
+            {
+                float btnW = (panel.width - 24.0f) * 0.5f - 4.0f;
+                if (UI::Button({x, y, btnW, 24.0f}, "Kill All")) {
+                    physicsWorld.bodies.clear();
+                    dynamicBodies.clear();
+                    cloths.clear();
+                    physicsWorld.springs.clear();
+                    physicsWorld.ballSocketJoints.clear();
+                    physicsWorld.hingeJoints.clear();
+                    state.carBody = nullptr;
+                    state.activeBlobIndex = -1;
+                }
+                if (UI::Button({x + btnW + 8.0f, y, btnW, 24.0f}, "Reset")) {
+                    resetScene();
+                }
+                y += 30.0f;
+
+                if (UI::Button({x, y, btnW, 24.0f}, isPaused ? "Resume" : "Pause")) {
+                    isPaused = !isPaused;
+                }
+                if (isPaused) {
+                    if (UI::Button({x + btnW + 8.0f, y, btnW, 24.0f}, "Step")) {
+                        singleStep = true;
+                    }
+                }
+                y += 30.0f;
+
+                DrawText("Time Scale", (int)x, (int)y + 4, 16, Color{200, 200, 200, 255});
+                if (UI::Button({x + 90.0f, y, 24.0f, 24.0f}, "-")) {
+                    timeScale = std::max(0.1f, timeScale - 0.1f);
+                }
+                char tsBuf[32];
+                snprintf(tsBuf, sizeof(tsBuf), "%.1f", timeScale);
+                DrawText(tsBuf, (int)(x + 122.0f), (int)y + 4, 16, RAYWHITE);
+                if (UI::Button({x + 154.0f, y, 24.0f, 24.0f}, "+")) {
+                    timeScale = std::min(5.0f, timeScale + 0.1f);
+                }
+                y += 34.0f;
+            }
+
             DrawText("Spawner", (int)x, (int)y, 22, RAYWHITE);
             y += 24.0f;
             {
                 std::vector<std::string> modes = {"Throw (Dynamic)", "Place (Dynamic)", "Place (Static)"};
                 int sel = (int)spawnMode;
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
-                uiDropdown(100, r, modes, sel);
-                if (g_activeDropdownId == 100) {
-                    g_activeDropdownRect = r;
-                    g_activeDropdownItems = modes;
-                    g_activeDropdownSelection = (int*)&spawnMode;
-                }
+                UI::Dropdown(100, r, modes, (int*)&spawnMode);
                 y += 34.0f;
             }
 
@@ -1938,12 +1123,7 @@ int main() {
                 };
                 int sel = (int)currentShape;
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
-                uiDropdown(101, r, shapes, sel);
-                if (g_activeDropdownId == 101) {
-                    g_activeDropdownRect = r;
-                    g_activeDropdownItems = shapes;
-                    g_activeDropdownSelection = (int*)&currentShape;
-                }
+                UI::Dropdown(101, r, shapes, (int*)&currentShape);
                 y += 34.0f;
             }
 
@@ -1953,7 +1133,7 @@ int main() {
                 bool changed = false;
                 Rectangle sld = {x, y, panel.width - 24.0f, 14.0f};
                 float val = (float)chainLength;
-                val = uiSlider(8888, sld, val, 2.0f, 20.0f, changed);
+                val = UI::Slider(8888, sld, val, 2.0f, 20.0f, changed);
                 chainLength = (int)val;
                 y += 18.0f;
                 char buf[32];
@@ -1968,7 +1148,7 @@ int main() {
             {
                 bool changed = false;
                 Rectangle sld = {x, y, panel.width - 24.0f, 16.0f};
-                currentSize = uiSlider(1001, sld, currentSize, 0.10f, 1.25f, changed);
+                currentSize = UI::Slider(1001, sld, currentSize, 0.10f, 1.25f, changed);
                 y += 22.0f;
                 char buf[128];
                 snprintf(buf, sizeof(buf), "%.2f", currentSize);
@@ -1998,30 +1178,8 @@ int main() {
                 if (sel == -1) sel = (int)presetMaterials.size(); // Default to custom if not found
 
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
-                int oldSel = sel;
-                uiDropdown(102, r, matNames, sel);
-                if (g_activeDropdownId == 102) {
-                    g_activeDropdownRect = r;
-                    g_activeDropdownItems = matNames;
-                }
-                
-                static int matSelIndex = 0;
-                if (g_activeDropdownId != 102) {
-                    matSelIndex = sel;
-                }
-                
-                if (g_activeDropdownId == 102) {
-                    g_activeDropdownSelection = &matSelIndex;
-                }
-                
-                if (matSelIndex != sel) {
-                    if (matSelIndex >= 0 && matSelIndex < (int)presetMaterials.size()) {
-                        currentMaterial = presetMaterials[matSelIndex];
-                        currentMaterialIsCustom = false;
-                    } else {
-                        currentMaterialIsCustom = true;
-                    }
-                }
+                matSelIndex = sel;
+                UI::Dropdown(102, r, matNames, &matSelIndex);
                 
                 y += 34.0f;
             }
@@ -2031,7 +1189,7 @@ int main() {
                 y += 18.0f;
                 bool changed = false;
                 Rectangle sld = {x, y, panel.width - 24.0f, 14.0f};
-                float nv = uiSlider(idBase, sld, v, minV, maxV, changed);
+                float nv = UI::Slider(idBase, sld, v, minV, maxV, changed);
                 y += 18.0f;
                 char buf[128];
                 if (precision == 0) snprintf(buf, sizeof(buf), "%.0f", nv);
@@ -2072,26 +1230,8 @@ int main() {
 
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
                 
-                static int floorSelIndex = 0;
-                if (g_activeDropdownId != 103) {
-                    floorSelIndex = sel;
-                }
-                
-                uiDropdown(103, r, matNames, floorSelIndex);
-                if (g_activeDropdownId == 103) {
-                    g_activeDropdownRect = r;
-                    g_activeDropdownItems = matNames;
-                    g_activeDropdownSelection = &floorSelIndex;
-                }
-                
-                if (floorSelIndex != sel) {
-                    if (floorSelIndex >= 0 && floorSelIndex < (int)presetMaterials.size()) {
-                        floorMaterial = presetMaterials[floorSelIndex];
-                        floorMaterialIsCustom = false;
-                    } else {
-                        floorMaterialIsCustom = true;
-                    }
-                }
+                floorSelIndex = sel;
+                UI::Dropdown(103, r, matNames, &floorSelIndex);
                 y += 34.0f;
             }
 
@@ -2100,7 +1240,7 @@ int main() {
                 y += 18.0f;
                 bool changed = false;
                 Rectangle sld = {x, y, panel.width - 24.0f, 14.0f};
-                float nv = uiSlider(idBase, sld, v, minV, maxV, changed);
+                float nv = UI::Slider(idBase, sld, v, minV, maxV, changed);
                 y += 18.0f;
                 char buf[128];
                 snprintf(buf, sizeof(buf), "%.3f", nv);
@@ -2114,31 +1254,41 @@ int main() {
             floorSliderRow(1201, "Friction", floorMaterial.friction, 0.0f, 1.5f);
             floorSliderRow(1202, "Restitution", floorMaterial.restitution, 0.0f, 1.0f);
 
+            contentHeight = (y + scrollY) - startY + pad;
+            EndScissorMode();
+            UI::setClipRect({0,0,0,0});
+
             Rectangle footer = {panel.x, panel.y + panel.height - footerH, panel.width, footerH};
             DrawRectangleRec(footer, Color{18, 18, 18, 245});
             DrawRectangleLinesEx(footer, 1.0f, Color{60, 60, 60, 255});
-            DrawText("Q to Spawn", (int)(panel.x + pad), (int)(footer.y + 12.0f), 18, RAYWHITE);
+            
+            if (isPaused) {
+                DrawText("PAUSED", (int)(panel.x + pad), (int)(footer.y + 12.0f), 18, RED);
+            } else {
+                DrawText("Q Spawn | X Delete", (int)(panel.x + pad), (int)(footer.y + 12.0f), 18, RAYWHITE);
+            }
+            
+            char timeBuf[32];
+            snprintf(timeBuf, sizeof(timeBuf), "x%.1f", timeScale);
+            DrawText(timeBuf, (int)(panel.x + panel.width - 60), (int)(footer.y + 12.0f), 18, RAYWHITE);
 
-            if (g_activeDropdownId != -1 && g_activeDropdownSelection) {
-                int id = g_activeDropdownId;
-                bool changed = uiDrawDropdownOverlay(g_activeDropdownId, g_activeDropdownRect, g_activeDropdownItems, *g_activeDropdownSelection);
-                if (changed) {
-                    if (id == 102) {
-                        int idx = *g_activeDropdownSelection;
-                        if (idx >= 0 && idx < (int)presetMaterials.size()) {
-                            currentMaterial = presetMaterials[idx];
-                            currentMaterialIsCustom = false;
-                        } else {
-                            currentMaterialIsCustom = true;
-                        }
-                    } else if (id == 103) {
-                        int idx = *g_activeDropdownSelection;
-                        if (idx >= 0 && idx < (int)presetMaterials.size()) {
-                            floorMaterial = presetMaterials[idx];
-                            floorMaterialIsCustom = false;
-                        } else {
-                            floorMaterialIsCustom = true;
-                        }
+            int changedId = UI::DrawDropdownOverlay();
+            if (changedId != -1) {
+                if (changedId == 102) {
+                    int idx = matSelIndex;
+                    if (idx >= 0 && idx < (int)presetMaterials.size()) {
+                        currentMaterial = presetMaterials[idx];
+                        currentMaterialIsCustom = false;
+                    } else {
+                        currentMaterialIsCustom = true;
+                    }
+                } else if (changedId == 103) {
+                    int idx = floorSelIndex;
+                    if (idx >= 0 && idx < (int)presetMaterials.size()) {
+                        floorMaterial = presetMaterials[idx];
+                        floorMaterialIsCustom = false;
+                    } else {
+                        floorMaterialIsCustom = true;
                     }
                 }
             }

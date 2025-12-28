@@ -19,6 +19,31 @@ bool Renderer::init(int width, int height, const char* title) {
         cubeMesh = GenMeshCube(1.0f, 1.0f, 1.0f);
         sphereMesh = GenMeshSphere(1.0f, 16, 16);
         meshesInitialized = true;
+
+        // Load shader
+        lightingShader = LoadShader("shaders/lighting_instancing.vs", "shaders/lighting.fs");
+        
+        // Get shader locations
+        lightingShader.locs[SHADER_LOC_MATRIX_MVP] = GetShaderLocation(lightingShader, "mvp");
+        lightingShader.locs[SHADER_LOC_VECTOR_VIEW] = GetShaderLocation(lightingShader, "viewPos");
+        lightingShader.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocationAttrib(lightingShader, "instanceTransform");
+        
+        locViewPos = GetShaderLocation(lightingShader, "viewPos");
+        locLightDir = GetShaderLocation(lightingShader, "lightDir");
+        locLightColor = GetShaderLocation(lightingShader, "lightColor");
+        locAmbientColor = GetShaderLocation(lightingShader, "ambientColor");
+
+        // Set default lighting values
+        Vector3 lightDir = Vector3Normalize({ -1.0f, -2.0f, -1.0f }); 
+        SetShaderValue(lightingShader, locLightDir, &lightDir, SHADER_UNIFORM_VEC3);
+        
+        Vector4 lightColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+        SetShaderValue(lightingShader, locLightColor, &lightColor, SHADER_UNIFORM_VEC4);
+        
+        Vector4 ambientColor = { 0.3f, 0.3f, 0.3f, 1.0f };
+        SetShaderValue(lightingShader, locAmbientColor, &ambientColor, SHADER_UNIFORM_VEC4);
+
+        locUseGrid = GetShaderLocation(lightingShader, "useGrid");
     }
 
     return IsWindowReady();
@@ -28,8 +53,19 @@ void Renderer::beginFrame() {
     for (auto& kv : cubeInstances) kv.second.clear();
     for (auto& kv : sphereInstances) kv.second.clear();
 
+    {
+        Matrix matGround = MatrixIdentity();
+
+        matGround = MatrixMultiply(MatrixScale(1000.0f, 0.1f, 1000.0f), matGround);
+        matGround = MatrixMultiply(MatrixTranslate(0.0f, -0.05f, 0.0f), matGround);
+
+        unsigned int cInt = (150 << 24) | (150 << 16) | (150 << 8) | 255;
+        InstanceKey key = { cInt, true }; // Grid enabled
+        cubeInstances[key].push_back(matGround);
+    }
+
     BeginDrawing();
-    ClearBackground(RAYWHITE);
+    ClearBackground(Color{100, 190, 255, 255}); // Vibrant Blue Sky
 
     float yawRad = camYaw * (PI/180.0f);
     float pitchRad = camPitch * (PI/180.0f);
@@ -44,42 +80,69 @@ void Renderer::beginFrame() {
     Vector3 eye = {camPos.x, camPos.y, camPos.z};
     Vector3 target = {camPos.x + forward.x, camPos.y + forward.y, camPos.z + forward.z};
 
-    Camera3D cam{};
-    cam.position = eye;
-    cam.target = target;
-    cam.up = {0.0f, 1.0f, 0.0f};
-    cam.fovy = 60.0f;
-    cam.projection = CAMERA_PERSPECTIVE;
+    mainCam = { 0 };
+    mainCam.position = eye;
+    mainCam.target = target;
+    mainCam.up = {0.0f, 1.0f, 0.0f};
+    mainCam.fovy = 60.0f;
+    mainCam.projection = CAMERA_PERSPECTIVE;
 
-    BeginMode3D(cam);
+    BeginMode3D(mainCam);
     in3D = true;
 
-    DrawGrid(20, 1.0f);
+    // Update view position uniform
+    float camPosArr[3] = { mainCam.position.x, mainCam.position.y, mainCam.position.z };
+    SetShaderValue(lightingShader, locViewPos, camPosArr, SHADER_UNIFORM_VEC3);
+
+    Matrix view = rlGetMatrixModelview();
+    Matrix proj = rlGetMatrixProjection();
+    Matrix viewProj = MatrixMultiply(view, proj);
+    frustum.update(viewProj);
 }
 
-void Renderer::end3D() {
+void Renderer::flush() {
     if (!in3D) return;
-
+    
     if (!cubeInstances.empty()) {
         Material mat = LoadMaterialDefault();
-        for (const auto& kv : cubeInstances) {
-            unsigned int cInt = kv.first;
+        mat.shader = lightingShader;
+        
+        for (auto& kv : cubeInstances) {
+            if (kv.second.empty()) continue;
+            unsigned int cInt = kv.first.color;
+            bool grid = kv.first.grid;
+            int useGrid = grid ? 1 : 0;
+            SetShaderValue(lightingShader, locUseGrid, &useGrid, SHADER_UNIFORM_INT);
+
             Color c = { (unsigned char)(cInt >> 24), (unsigned char)((cInt >> 16) & 0xFF), (unsigned char)((cInt >> 8) & 0xFF), (unsigned char)(cInt & 0xFF) };
             mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
             DrawMeshInstanced(cubeMesh, mat, kv.second.data(), (int)kv.second.size());
+            kv.second.clear();
         }
     }
 
     if (!sphereInstances.empty()) {
         Material mat = LoadMaterialDefault();
-        for (const auto& kv : sphereInstances) {
-            unsigned int cInt = kv.first;
+        mat.shader = lightingShader;
+
+        for (auto& kv : sphereInstances) {
+            if (kv.second.empty()) continue;
+            unsigned int cInt = kv.first.color;
+            bool grid = kv.first.grid;
+            int useGrid = grid ? 1 : 0;
+            SetShaderValue(lightingShader, locUseGrid, &useGrid, SHADER_UNIFORM_INT);
+
             Color c = { (unsigned char)(cInt >> 24), (unsigned char)((cInt >> 16) & 0xFF), (unsigned char)((cInt >> 8) & 0xFF), (unsigned char)(cInt & 0xFF) };
             mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
             DrawMeshInstanced(sphereMesh, mat, kv.second.data(), (int)kv.second.size());
+            kv.second.clear();
         }
     }
+}
 
+void Renderer::end3D() {
+    if (!in3D) return;
+    flush();
     EndMode3D();
     in3D = false;
 }
@@ -173,6 +236,10 @@ const std::vector<Renderer::Edge>& Renderer::getMeshBoundaryEdges(const Triangle
 void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, float size) {
     if (!body) return;
 
+    if (!frustum.containsSphere(body->position, body->collider.boundingRadius())) {
+        return;
+    }
+
     Vector3 pos = { body->position.x, body->position.y, body->position.z };
     Color color = style.color;
     bool outline = style.outline;
@@ -210,13 +277,13 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
             const Vec3& a = mesh.vertices[t.a];
             const Vec3& b = mesh.vertices[t.b];
             const Vec3& c0 = mesh.vertices[t.c];
+            
+            Vec3 n = Vec3::cross(b - a, c0 - a).normalized();
+            
+            rlNormal3f(n.x, n.y, n.z);
             rlVertex3f(a.x, a.y, a.z);
             rlVertex3f(b.x, b.y, b.z);
             rlVertex3f(c0.x, c0.y, c0.z);
-
-            rlVertex3f(a.x, a.y, a.z);
-            rlVertex3f(c0.x, c0.y, c0.z);
-            rlVertex3f(b.x, b.y, b.z);
         }
         rlEnd();
 
@@ -250,7 +317,8 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
                     mat = MatrixMultiply(mat, currentTransform);
                     
                     unsigned int cInt = (color.r << 24) | (color.g << 16) | (color.b << 8) | color.a;
-                    sphereInstances[cInt].push_back(mat);
+                    InstanceKey key = { cInt, style.grid };
+                    sphereInstances[key].push_back(mat);
                 }
                 break;
             }
@@ -271,7 +339,8 @@ void Renderer::drawRigidBody(const RigidBody* body, const RenderStyle& style, fl
                     mat = MatrixMultiply(mat, currentTransform);
 
                     unsigned int cInt = (color.r << 24) | (color.g << 16) | (color.b << 8) | color.a;
-                    cubeInstances[cInt].push_back(mat);
+                    InstanceKey key = { cInt, style.grid };
+                    cubeInstances[key].push_back(mat);
                 }
                 break;
             }
@@ -373,12 +442,13 @@ void Renderer::drawConvex(const PolyhedronShape& poly, Color color, bool outline
         const Vec3& a = poly.verts[t.a];
         const Vec3& b = poly.verts[t.b];
         const Vec3& c = poly.verts[t.c];
+        
+        Vec3 n = Vec3::cross(b - a, c - a).normalized();
+        
+        rlNormal3f(n.x, n.y, n.z);
         rlVertex3f(a.x, a.y, a.z);
         rlVertex3f(b.x, b.y, b.z);
         rlVertex3f(c.x, c.y, c.z);
-        rlVertex3f(a.x, a.y, a.z);
-        rlVertex3f(c.x, c.y, c.z);
-        rlVertex3f(b.x, b.y, b.z);
     }
     rlEnd();
 
@@ -448,6 +518,9 @@ void Renderer::endFrame() {
 }
 
 void Renderer::shutdown() {
+    if (meshesInitialized) {
+        UnloadShader(lightingShader);
+    }
     CloseWindow();
 }
 
@@ -464,4 +537,8 @@ Vec3 Renderer::getCameraForward() const {
         cosf(pitchRad) * sinf(yawRad)
     };
     return forward.normalized();
+}
+
+bool Renderer::isVisible(const Vec3& center, float radius) const {
+    return frustum.containsSphere(center, radius);
 }

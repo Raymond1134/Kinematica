@@ -26,7 +26,9 @@ private:
 
     static Vec3 faceNormal(const Vec3& a, const Vec3& b, const Vec3& c) { return Vec3::cross(b - a, c - a); }
 
-    static bool pointOutsideFace(const Vec3& p, const Vec3& a, const Vec3& normal ) { return Vec3::dot(normal, p - a) > 1e-6f; }
+    static bool pointOutsideFace(const Vec3& p, const Vec3& a, const Vec3& normalUnit, float epsDist) {
+        return Vec3::dot(normalUnit, p - a) > epsDist;
+    }
 
     void addEdgeUnique(int a, int b) {
         if (a == b) return;
@@ -36,6 +38,19 @@ private:
     }
 
 public:
+    float computeVolume() const {
+        if (tris.empty() || verts.empty()) return 0.0f;
+        double sum = 0.0;
+        for (const auto& t : tris) {
+            const Vec3& a = verts[t.a];
+            const Vec3& b = verts[t.b];
+            const Vec3& c = verts[t.c];
+            double v6 = (double)Vec3::dot(a, Vec3::cross(b, c));
+            sum += std::fabs(v6);
+        }
+        return (float)(sum / 6.0);
+    }
+
     void buildRenderCache() {
         tris.clear();
         edges.clear();
@@ -91,8 +106,14 @@ public:
             std::vector<int> visible;
             for (int t = 0; t < (int)tris.size(); ++t) {
                 const Tri& f = tris[t];
-                Vec3 normal = faceNormal(verts[f.a], verts[f.b], verts[f.c] );
-                if (pointOutsideFace(verts[p], verts[f.a], normal)) { visible.push_back(t); }
+                Vec3 normal = faceNormal(verts[f.a], verts[f.b], verts[f.c]);
+                float n2 = normal.lengthSq();
+                if (n2 <= 1e-18f) continue;
+                Vec3 nUnit = normal * (1.0f / std::sqrt(n2));
+                const float epsDist = 1e-5f * std::max(1.0f, boundRadius);
+                if (pointOutsideFace(verts[p], verts[f.a], nUnit, epsDist)) {
+                    visible.push_back(t);
+                }
             }
 
             if (visible.empty()) continue;
@@ -117,6 +138,20 @@ public:
 
             for (int i = (int)visible.size() - 1; i >= 0; --i) { tris.erase(tris.begin() + visible[i]); }
             for (const Edge& e : boundary) { tris.push_back({e.a, e.b, p}); }
+        }
+
+        Vec3 center = {0.0f, 0.0f, 0.0f};
+        for (const Vec3& v : verts) center += v;
+        center = center * (1.0f / (float)verts.size());
+        for (Tri& t : tris) {
+            const Vec3& a = verts[t.a];
+            const Vec3& b = verts[t.b];
+            const Vec3& c = verts[t.c];
+            Vec3 nrm = faceNormal(a, b, c);
+            Vec3 triCenter = (a + b + c) * (1.0f / 3.0f);
+            if (Vec3::dot(nrm, triCenter - center) < 0.0f) {
+                std::swap(t.b, t.c);
+            }
         }
 
         struct EdgeInfo {

@@ -5,6 +5,8 @@
 #include "RigidBody.h"
 #include "Spring.h"
 #include "Constraints.h"
+#include "BroadPhase.h"
+#include "FrameAllocator.h"
 
 #include <vector>
 #include <cmath>
@@ -18,16 +20,16 @@ class PhysicsWorld {
 public:
     PhysicsWorld();
 
-    // Continuous Collision Detection (CCD). This is a foundation for later TOI-based CCD.
     bool enableCCD = true;
     int ccdMaxSubsteps = 24;
     float ccdMaxTranslationFraction = 0.18f;
     float ccdMinCharacteristicRadius = 0.04f;
 
     bool enableSplitImpulse = true;
-    int ompMinBodiesForParallel = 24;
-    int ompMinPairsForParallel = 96;
+    int ompMinBodiesForParallel = 32;
+    int ompMinPairsForParallel = 128;
 
+    // Performance statistics for the last frame.
     struct PerfStats {
         float stepMs = 0.0f;
         float buildContactsMs = 0.0f;
@@ -46,33 +48,42 @@ public:
     std::vector<Spring> springs;
     std::vector<BallSocketJoint> ballSocketJoints;
     std::vector<HingeJoint> hingeJoints;
-
     // Ground plane at y=floorY. This is intentionally a dedicated plane contact.
     float floorY = 0.0f;
     bool enableFloor = true;
-    float floorFriction = 0.5f;
-    float floorRestitution = 0.05f;
+    float floorFriction = 0.9f;
+    float floorRestitution = 0.0f;
 
     // Simple global damping. Values are in 1/seconds
-    float linearDampingPerSecond = 0.04f;
-    float angularDampingPerSecond = 0.04f;
-    float floorContactAngularDampingPerSecond = 1.00f;
+    float linearDampingPerSecond = 0.08f;
+    float angularDampingPerSecond = 0.08f;
+    float floorContactAngularDampingPerSecond = 1.50f;
 
     // Contact-only damping for tiny residual jitter in resting stacks.
-    float contactLinearDampingPerSecond = 2.00f;
-    float contactAngularDampingPerSecond = 2.50f;
-    float contactDampingMaxSpeed = 0.40f;
-    float contactDampingMaxAngularSpeed = 1.20f;
+    float contactLinearDampingPerSecond = 8.00f;
+    float contactAngularDampingPerSecond = 8.00f;
+    float contactDampingMaxSpeed = 0.20f;
+    float contactDampingMaxAngularSpeed = 0.35f;
 
     // Hard deadzone for resting contacts
-    float contactRestVelKill = 0.005f;
-    float contactRestAngVelKill = 0.015f;
+    float contactRestVelKill = 0.01f;
+    float contactRestAngVelKill = 0.01f;
+
+    float contactSlop = 0.0005f;
+    float baumgarteBeta = 0.30f;
+    float maxBaumgarteBias = 4.00f;
 
     // Extra friction-only passes for resting contacts.
-    int restingFrictionExtraPasses = 6;
-    float restingMaxNormalSpeed = 0.12f;
-    float restingMaxBodySpeed = 0.60f;
+    int restingFrictionExtraPasses = 20;
+    float restingMaxNormalSpeed = 0.10f;
+    float restingMaxBodySpeed = 0.80f;
     float restingMaxBodyAngularSpeed = 2.50f;
+
+    float restLockLinearSpeed = 0.005f;
+    float restLockAngularSpeed = 0.005f;
+    float restLockTime = 0.15f;
+    float restWakeAccel = 0.5f;
+    float restWakeAngularSpeed = 0.15f;
 
     struct BodyPair {
         RigidBody* a;
@@ -96,7 +107,7 @@ public:
     void addRigidBody(RigidBody* body);
     void step(float deltaTime);
 
-    int solverIterations = 20;
+    int solverIterations = 4;
     uint32_t frameId = 1;
 
     struct ContactPointState {
@@ -122,7 +133,9 @@ public:
         int count = 0;
     };
 
-    std::vector<ContactManifold> contacts;
+    std::vector<ContactManifold*> contacts;
+    FrameAllocator contactAllocator;
+    std::vector<FrameAllocator> threadContactAllocators;
 
     struct ContactKey {
         const void* a;
@@ -169,32 +182,16 @@ public:
     const CachedImpulse* findCachedImpulseNear(const RigidBody* a, const RigidBody* b, const Vec3& pWorld) const;
     void pruneContactCache();
 
-    void buildContacts(std::vector<ContactManifold>& out);
+    void buildContacts(std::vector<ContactManifold*>& out);
 
-    struct SapEntry {
-        float minX;
-        float maxX;
-        float minY;
-        float maxY;
-        float minZ;
-        float maxZ;
-        RigidBody* body;
-    };
-    struct SapPair {
-        RigidBody* a;
-        RigidBody* b;
-    };
-    std::vector<SapEntry> sapEntries;
-    std::vector<SapPair> sapPairs;
-    std::vector<int> sapActive;
+    BroadPhase broadPhase;
 
-    std::vector<std::vector<ContactManifold>> contactLocals;
+    std::vector<std::vector<ContactManifold*>> contactLocals;
     std::vector<EPAScratch> epaLocals;
 
     void ensureContactLocals(int maxThreads);
-    void buildSapCandidates();
     bool detectFloor(RigidBody* body, ContactManifold& m);
-    void warmStartContacts(std::vector<ContactManifold>& ms);
+    void warmStartContacts(std::vector<ContactManifold*>& ms);
 
     static float clampf(float v, float lo, float hi);
     static void getBoxAxes(const RigidBody* b, Vec3 outAxes[3]);
@@ -218,27 +215,25 @@ public:
     bool collideCapsuleSphere(RigidBody* capsuleBody, RigidBody* sphereBody, ContactManifold& m);
     bool collideCapsuleCapsule(RigidBody* a, RigidBody* b, ContactManifold& m);
     bool collideBoxBox(RigidBody* a, RigidBody* b, ContactManifold& m);
-    void appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out);
-    void appendMeshBoxManifolds(const RigidBody* meshBody, const RigidBody* boxBody, std::vector<ContactManifold>& out, int maxManifolds) const;
-    void appendMeshConvexManifolds(const RigidBody* meshBody, const RigidBody* convexBody, std::vector<ContactManifold>& out, int maxManifolds) const;
+    void appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold*>& out, FrameAllocator& allocator);
+    void appendMeshBoxManifolds(const RigidBody* meshBody, const RigidBody* boxBody, std::vector<ContactManifold*>& out, int maxManifolds, FrameAllocator& allocator) const;
+    void appendMeshConvexManifolds(const RigidBody* meshBody, const RigidBody* convexBody, std::vector<ContactManifold*>& out, int maxManifolds, FrameAllocator& allocator) const;
     bool collideMeshSphere(const RigidBody* meshBody, const RigidBody* sphereBody, ContactManifold& m) const;
     bool collideMeshCapsule(const RigidBody* meshBody, const RigidBody* capsuleBody, ContactManifold& m) const;
     bool collideMeshBox(const RigidBody* meshBody, const RigidBody* boxBody, ContactManifold& m) const;
     static bool pointInTri(const Vec3& p, const Vec3& a, const Vec3& b, const Vec3& c);
     static Vec3 closestPtPointTriangle(const Vec3& p, const Vec3& a, const Vec3& b, const Vec3& c);
 
-    void computeRestitutionTargets(std::vector<ContactManifold>& ms);
-    void solveContacts(std::vector<ContactManifold>& ms, bool applyPositionCorrection);
+    void computeRestitutionTargets(std::vector<ContactManifold*>& ms);
     void solveContacts(const std::vector<ContactManifold*>& ms, bool applyPositionCorrection);
-    void solveRestingFriction(std::vector<ContactManifold>& ms, int passes);
     void solveRestingFriction(const std::vector<ContactManifold*>& ms, int passes);
     void solveJoints(const std::vector<BallSocketJoint*>& joints, float dt, bool isFirst);
     void solveHingeJoints(const std::vector<HingeJoint*>& joints, float dt, bool isFirst);
-    void solveIslands(std::vector<ContactManifold>& contacts);
+    void solveIslands(std::vector<ContactManifold*>& contacts);
 
     static RigidBody makeChildProxyBody(const RigidBody* parent, const CompoundChild& child);
     static void orientNormalForPair(ContactManifold& m, const RigidBody* a, const RigidBody* b);
-    void appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out, EPAScratch& epaScratch);
+    void appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold*>& out, EPAScratch& epaScratch, FrameAllocator& allocator);
     bool detectBodyBodyConvex(RigidBody* a, RigidBody* b, ContactManifold& m, EPAScratch& epaScratch);
     Vec3 invInertiaWorldMul(const RigidBody* body, const Vec3& v) const;
     void applyImpulseAtPoint(RigidBody* body, const Vec3& impulse, const Vec3& pointWorld, bool wake = true);

@@ -90,7 +90,8 @@ struct Collider : public ConvexShape {
         return 0.0f;
     }
 
-    Vec3 support(const Vec3& dir) const override;
+    Vec3 support(const Vec3& dir) const;
+    void computeAabb(const Vec3& pos, const Quat& rot, Vec3& outMin, Vec3& outMax) const;
 };
 
 struct CompoundChild {

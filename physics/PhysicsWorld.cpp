@@ -11,6 +11,12 @@
 PhysicsWorld::PhysicsWorld() {
     contactCache.reserve(16384);
     contactCache.max_load_factor(0.70f);
+
+    int maxThreads = omp_get_max_threads();
+    threadContactAllocators.reserve(maxThreads);
+    for(int i=0; i<maxThreads; ++i) {
+        threadContactAllocators.emplace_back(1024 * 1024);
+    }
 }
 
 void PhysicsWorld::addRigidBody(RigidBody* body) { bodies.push_back(body); }
@@ -201,15 +207,23 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
     perf.awake = awakeCount;
 
     contacts.clear();
+    contactAllocator.reset();
+    for(auto& alloc : threadContactAllocators) alloc.reset();
 
     auto tContacts0 = clock::now();
     buildContacts(contacts);
     auto tContacts1 = clock::now();
     perf.buildContactsMs += std::chrono::duration<float, std::milli>(tContacts1 - tContacts0).count();
 
-    for (const ContactManifold& m : contacts) {
-        if (m.a && !m.a->isStatic) { m.a->sleeping = false; m.a->sleepTimer = 0.0f; }
-        if (m.b && !m.b->isStatic) { m.b->sleeping = false; m.b->sleepTimer = 0.0f; }
+    for (const ContactManifold* mPtr : contacts) {
+        const ContactManifold& m = *mPtr;
+        RigidBody* a = m.a;
+        RigidBody* b = m.b;
+        if (!a || !b) continue;
+        if (a->isStatic || b->isStatic) continue;
+
+        if (!a->sleeping && b->sleeping) { b->sleeping = false; b->sleepTimer = 0.0f; }
+        else if (a->sleeping && !b->sleeping) { a->sleeping = false; a->sleepTimer = 0.0f; }
     }
 
     for (int iter = 0; iter < 2; ++iter) {
@@ -245,9 +259,9 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
     auto tSolve1 = clock::now();
     perf.solveMs += std::chrono::duration<float, std::milli>(tSolve1 - tSolve0).count();
 
-    const float sleepLinear = 0.025f;
-    const float sleepAngular = 0.015f;
-    const float sleepTime = 0.35f;
+    const float sleepLinear = 0.04f;
+    const float sleepAngular = 0.04f;
+    const float sleepTime = 0.5f;
     for (RigidBody* body: bodies) {
         if (!body) continue;
         if (body->isStatic) continue;
@@ -259,20 +273,42 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
         if (body->hadContactThisStep) {
             float v2 = body->velocity.lengthSq();
             float w2 = body->angularVelocity.lengthSq();
-            if (v2 < contactDampingMaxSpeed * contactDampingMaxSpeed) {
+
+            const float maxV2 = contactDampingMaxSpeed * contactDampingMaxSpeed;
+            const float maxW2 = contactDampingMaxAngularSpeed * contactDampingMaxAngularSpeed;
+
+            if (v2 < maxV2) {
                 float k = expf(-contactLinearDampingPerSecond * deltaTime);
                 body->velocity = body->velocity * k;
             }
-            if (w2 < contactDampingMaxAngularSpeed * contactDampingMaxAngularSpeed) {
+            if (v2 < maxV2 && w2 < maxW2) {
                 float k = expf(-contactAngularDampingPerSecond * deltaTime);
                 body->angularVelocity = body->angularVelocity * k;
+            }
+
+            v2 = body->velocity.lengthSq();
+            w2 = body->angularVelocity.lengthSq();
+
+            if (enableFloor) {
+                const float hvKill = restLockLinearSpeed;
+                const float hv2 = body->velocity.x * body->velocity.x + body->velocity.z * body->velocity.z;
+                if (hv2 < hvKill * hvKill) {
+                    Vec3 aabbMin, aabbMax;
+                    BroadPhase::computeAabb(body, aabbMin, aabbMax);
+                    const float floorEps = contactSlop * 8.0f + 0.0005f;
+                    if (aabbMin.y <= floorY + floorEps) {
+                        body->velocity.x = 0.0f;
+                        body->velocity.z = 0.0f;
+                        v2 = body->velocity.lengthSq();
+                    }
+                }
             }
 
             if (v2 < contactRestVelKill * contactRestVelKill) {
                 body->velocity = {0.0f, 0.0f, 0.0f};
                 v2 = 0.0f;
             }
-            if (w2 < contactRestAngVelKill * contactRestAngVelKill) {
+            if (v2 == 0.0f && w2 < contactRestAngVelKill * contactRestAngVelKill) {
                 body->angularVelocity = {0.0f, 0.0f, 0.0f};
                 w2 = 0.0f;
             }
@@ -289,6 +325,22 @@ void PhysicsWorld::stepSubstep(float deltaTime, bool isFinalSubstep) {
             }
         } else {
             body->sleepTimer = 0.0f;
+        }
+
+        const float restLin = restLockLinearSpeed;
+        const float restAng = restLockAngularSpeed;
+        if (body->hadContactThisStep && v2 < restLin * restLin && w2 < restAng * restAng) {
+            body->restLockTimer += deltaTime;
+            if (body->restLockTimer >= restLockTime) {
+                body->velocity = {0.0f, 0.0f, 0.0f};
+                body->angularVelocity = {0.0f, 0.0f, 0.0f};
+                body->restLocked = true;
+            }
+        } else {
+            body->restLockTimer = 0.0f;
+            if (body->restLocked && (v2 > restLin * restLin * 1.5f || w2 > restAng * restAng * 1.5f)) {
+                body->restLocked = false;
+            }
         }
     }
 
@@ -364,17 +416,12 @@ bool PhysicsWorld::isFiniteVec3(const Vec3& v) {
 }
 
 void PhysicsWorld::buildFrictionBasis(const Vec3& n, Vec3& t1, Vec3& t2) {
-    Vec3 a = (fabsf(n.y) < 0.9f) ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
-    t1 = Vec3::cross(a, n);
-    float lenSq = t1.lengthSq();
-    if (lenSq < 1e-12f) {
-        a = Vec3{0.0f, 0.0f, 1.0f};
-        t1 = Vec3::cross(a, n);
-        lenSq = t1.lengthSq();
+    if (fabsf(n.x) < 0.6f && fabsf(n.y) > 0.8f) {
+        t1 = Vec3::cross(n, Vec3{1.0f, 0.0f, 0.0f}).normalized();
+    } else {
+        t1 = Vec3::cross(n, Vec3{0.0f, 1.0f, 0.0f}).normalized();
     }
-    if (lenSq > 1e-12f) t1 = t1 / sqrtf(lenSq);
-    else t1 = Vec3{1.0f, 0.0f, 0.0f};
-    t2 = Vec3::cross(n, t1);
+    t2 = Vec3::cross(n, t1).normalized();
 }
 
 PhysicsWorld::ContactKey PhysicsWorld::makeContactKey(const RigidBody* a, const RigidBody* b, const Vec3& pWorld) {
@@ -425,7 +472,7 @@ void PhysicsWorld::pruneContactCache() {
     if (contactCache.size() > maxEntries) { contactCache.clear(); }
 }
 
-void PhysicsWorld::buildContacts(std::vector<ContactManifold>& out) {
+void PhysicsWorld::buildContacts(std::vector<ContactManifold*>& out) {
     out.reserve(bodies.size() * 2);
 
     const int nBodies = (int)bodies.size();
@@ -441,12 +488,16 @@ void PhysicsWorld::buildContacts(std::vector<ContactManifold>& out) {
                 const int tid = omp_get_thread_num();
                 auto& local = locals[tid];
                 local.clear();
+                FrameAllocator& allocator = threadContactAllocators[tid];
 
                 #pragma omp for schedule(static)
                 for (int i = 0; i < nBodies; ++i) {
                     RigidBody* body = bodies[i];
                     ContactManifold m;
-                    if (detectFloor(body, m)) { local.push_back(m); }
+                    if (detectFloor(body, m)) { 
+                        ContactManifold* newM = allocator.newObject<ContactManifold>(m);
+                        local.push_back(newM); 
+                    }
                 }
             }
 
@@ -458,16 +509,19 @@ void PhysicsWorld::buildContacts(std::vector<ContactManifold>& out) {
             for (int i = 0; i < nBodies; ++i) {
                 RigidBody* body = bodies[i];
                 ContactManifold m;
-                if (detectFloor(body, m)) { out.push_back(m); }
+                if (detectFloor(body, m)) { 
+                    ContactManifold* newM = contactAllocator.newObject<ContactManifold>(m);
+                    out.push_back(newM); 
+                }
             }
         }
     }
 
-    buildSapCandidates();
+    broadPhase.build(bodies);
 
-    perf.broadphasePairs = (int)sapPairs.size();
+    perf.broadphasePairs = (int)broadPhase.pairs.size();
 
-    const int nPairs = (int)sapPairs.size();
+    const int nPairs = (int)broadPhase.pairs.size();
     const bool useOmpPairs = useOmp && (nPairs >= ompMinPairsForParallel);
     if (useOmpPairs) {
         int perThreadReserve = std::max(8, nPairs / std::max(1, maxThreads));
@@ -479,21 +533,21 @@ void PhysicsWorld::buildContacts(std::vector<ContactManifold>& out) {
         #pragma omp parallel for schedule(static)
         for (int p = 0; p < nPairs; ++p) {
             const int tid = omp_get_thread_num();
-            RigidBody* a = sapPairs[p].a;
-            RigidBody* b = sapPairs[p].b;
+            RigidBody* a = broadPhase.pairs[p].a;
+            RigidBody* b = broadPhase.pairs[p].b;
             if (a > b) std::swap(a, b);
             if (ignoredPairs.count({a, b})) continue;
-            appendBodyBodyContacts(sapPairs[p].a, sapPairs[p].b, locals[tid], epaLocals[tid]);
+            appendBodyBodyContacts(broadPhase.pairs[p].a, broadPhase.pairs[p].b, locals[tid], epaLocals[tid], threadContactAllocators[tid]);
         }
 
         for (auto& local : locals) { out.insert(out.end(), local.begin(), local.end()); }
     } else {
         for (int p = 0; p < nPairs; ++p) {
-            RigidBody* a = sapPairs[p].a;
-            RigidBody* b = sapPairs[p].b;
+            RigidBody* a = broadPhase.pairs[p].a;
+            RigidBody* b = broadPhase.pairs[p].b;
             if (a > b) std::swap(a, b);
             if (ignoredPairs.count({a, b})) continue;
-            appendBodyBodyContacts(sapPairs[p].a, sapPairs[p].b, out, epaLocals[0]);
+            appendBodyBodyContacts(broadPhase.pairs[p].a, broadPhase.pairs[p].b, out, epaLocals[0], contactAllocator);
         }
     }
 
@@ -512,170 +566,6 @@ void PhysicsWorld::ensureContactLocals(int maxThreads) {
     }
 }
 
-void PhysicsWorld::buildSapCandidates() {
-    constexpr float broadphaseMargin = 0.01f;
-
-    auto absf3 = [](const Vec3& v) {
-        return Vec3{fabsf(v.x), fabsf(v.y), fabsf(v.z)};
-    };
-
-    auto computeAabb = [&](const RigidBody* b, Vec3& outMin, Vec3& outMax) {
-        switch (b->collider.type) {
-            case ColliderType::Sphere: {
-                float r = b->collider.sphere.radius;
-                Vec3 e{r, r, r};
-                outMin = b->position - e;
-                outMax = b->position + e;
-                return;
-            }
-            case ColliderType::Box: {
-                Vec3 he = b->collider.box.halfExtents;
-                Vec3 ax = absf3(b->orientation.rotate({1.0f, 0.0f, 0.0f}));
-                Vec3 ay = absf3(b->orientation.rotate({0.0f, 1.0f, 0.0f}));
-                Vec3 az = absf3(b->orientation.rotate({0.0f, 0.0f, 1.0f}));
-                Vec3 e{
-                    ax.x * he.x + ay.x * he.y + az.x * he.z,
-                    ax.y * he.x + ay.y * he.y + az.y * he.z,
-                    ax.z * he.x + ay.z * he.y + az.z * he.z,
-                };
-                outMin = b->position - e;
-                outMax = b->position + e;
-                return;
-            }
-            case ColliderType::Capsule: {
-                float r = b->collider.capsule.radius;
-                float hh = b->collider.capsule.halfHeight;
-                Vec3 axis = absf3(b->orientation.rotate({0.0f, 1.0f, 0.0f}));
-                Vec3 e{r + axis.x * hh, r + axis.y * hh, r + axis.z * hh};
-                outMin = b->position - e;
-                outMax = b->position + e;
-                return;
-            }
-            case ColliderType::Convex: {
-                if (b->collider.polyhedron) {
-                    Vec3 minV, maxV;
-                    {
-                        Vec3 dir = {1.0f, 0.0f, 0.0f};
-                        Vec3 sup = b->collider.support(b->orientation.rotateInv(dir));
-                        maxV.x = (b->orientation.rotate(sup) + b->position).x;
-                        sup = b->collider.support(b->orientation.rotateInv(-dir));
-                        minV.x = (b->orientation.rotate(sup) + b->position).x;
-                    }
-                    {
-                        Vec3 dir = {0.0f, 1.0f, 0.0f};
-                        Vec3 sup = b->collider.support(b->orientation.rotateInv(dir));
-                        maxV.y = (b->orientation.rotate(sup) + b->position).y;
-                        sup = b->collider.support(b->orientation.rotateInv(-dir));
-                        minV.y = (b->orientation.rotate(sup) + b->position).y;
-                    }
-                    {
-                        Vec3 dir = {0.0f, 0.0f, 1.0f};
-                        Vec3 sup = b->collider.support(b->orientation.rotateInv(dir));
-                        maxV.z = (b->orientation.rotate(sup) + b->position).z;
-                        sup = b->collider.support(b->orientation.rotateInv(-dir));
-                        minV.z = (b->orientation.rotate(sup) + b->position).z;
-                    }
-                    outMin = minV;
-                    outMax = maxV;
-                    return;
-                }
-                float r = b->collider.boundingRadius();
-                Vec3 e{r, r, r};
-                outMin = b->position - e;
-                outMax = b->position + e;
-                return;
-            }
-            case ColliderType::Mesh: {
-                if (b->collider.mesh) {
-                    const TriangleMesh& mesh = *static_cast<const TriangleMesh*>(b->collider.mesh.get());
-                    Vec3 minL = mesh.localBounds.min;
-                    Vec3 maxL = mesh.localBounds.max;
-                    Vec3 centerL = (minL + maxL) * 0.5f;
-                    Vec3 heL = (maxL - minL) * 0.5f;
-                    
-                    Vec3 ax = absf3(b->orientation.rotate({1.0f, 0.0f, 0.0f}));
-                    Vec3 ay = absf3(b->orientation.rotate({0.0f, 1.0f, 0.0f}));
-                    Vec3 az = absf3(b->orientation.rotate({0.0f, 0.0f, 1.0f}));
-                    
-                    Vec3 e{
-                        ax.x * heL.x + ay.x * heL.y + az.x * heL.z,
-                        ax.y * heL.x + ay.y * heL.y + az.y * heL.z,
-                        ax.z * heL.x + ay.z * heL.y + az.z * heL.z,
-                    };
-                    Vec3 centerW = b->orientation.rotate(centerL) + b->position;
-                    outMin = centerW - e;
-                    outMax = centerW + e;
-                    return;
-                }
-                float r = b->collider.boundingRadius();
-                Vec3 e{r, r, r};
-                outMin = b->position - e;
-                outMax = b->position + e;
-                return;
-            }
-            case ColliderType::Compound: {
-                float r = b->collider.boundingRadius();
-                Vec3 e{r, r, r};
-                outMin = b->position - e;
-                outMax = b->position + e;
-                return;
-            }
-        }
-    };
-
-    sapEntries.clear();
-    sapEntries.reserve(bodies.size());
-    for (RigidBody* body : bodies) {
-        if (!body) continue;
-        Vec3 mn, mx;
-        computeAabb(body, mn, mx);
-        SapEntry e;
-        e.minX = mn.x - broadphaseMargin;
-        e.maxX = mx.x + broadphaseMargin;
-        e.minY = mn.y - broadphaseMargin;
-        e.maxY = mx.y + broadphaseMargin;
-        e.minZ = mn.z - broadphaseMargin;
-        e.maxZ = mx.z + broadphaseMargin;
-        e.body = body;
-        sapEntries.push_back(e);
-    }
-
-    std::sort(sapEntries.begin(), sapEntries.end(), [](const SapEntry& a, const SapEntry& b) { return a.minX < b.minX; });
-
-    sapPairs.clear();
-    sapPairs.reserve(sapEntries.size() * 2);
-
-    sapActive.clear();
-    if (sapActive.capacity() < 128) sapActive.reserve(128);
-
-    for (int i = 0; i < (int)sapEntries.size(); ++i) {
-        const SapEntry& cur = sapEntries[i];
-        RigidBody* bi = cur.body;
-        if (!bi) continue;
-        int write = 0;
-        for (int k = 0; k < (int)sapActive.size(); ++k) {
-            if (sapEntries[sapActive[k]].maxX >= cur.minX) { sapActive[write++] = sapActive[k]; }
-        }
-        sapActive.resize(write);
-
-        for (int idx : sapActive) {
-            const SapEntry& other = sapEntries[idx];
-            RigidBody* bj = other.body;
-            if (!bj) continue;
-            if (bi == bj) continue;
-            if (bi->isStatic && bj->isStatic) continue;
-            if (bi->sleeping && bj->sleeping) continue;
-            if (bi->groupId != 0 && bi->groupId == bj->groupId) continue;
-
-            if (cur.maxY < other.minY || cur.minY > other.maxY) continue;
-            if (cur.maxZ < other.minZ || cur.minZ > other.maxZ) continue;
-
-            sapPairs.push_back({bi, bj});
-        }
-
-        sapActive.push_back(i);
-    }
-}
 
 bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
     if (!body) return false;
@@ -877,15 +767,17 @@ bool PhysicsWorld::detectFloor(RigidBody* body, ContactManifold& m) {
     return m.count > 0;
 }
 
-void PhysicsWorld::warmStartContacts(std::vector<ContactManifold>& ms) {
+void PhysicsWorld::warmStartContacts(std::vector<ContactManifold*>& ms) {
     constexpr float warmN = 1.0f;
-    constexpr float warmT = 1.0f;
-    constexpr float warmW = 1.0f;
+    constexpr float warmT = 0.70f;
+    constexpr float warmW = 0.50f;
 
     constexpr float minNormalAlign = 0.90f;
     constexpr float minTwistAlign = 0.98f;
 
-    for (ContactManifold& m : ms) {
+    for (ContactManifold* mPtr : ms) {
+        if (!mPtr) continue;
+        ContactManifold& m = *mPtr;
         const bool hasMesh =
             (m.a && m.a->collider.type == ColliderType::Mesh) ||
             (m.b && m.b->collider.type == ColliderType::Mesh);
@@ -911,17 +803,36 @@ void PhysicsWorld::warmStartContacts(std::vector<ContactManifold>& ms) {
             float nAlign = Vec3::dot(cachedNormal, m.normal);
             if (nAlign < minNormalAlign) continue;
 
-            float n0 = c.normalImpulse * warmN;
+            const bool isFloor = (m.b == nullptr);
+            const float warmNFactor = isFloor ? 0.35f : 1.0f;
+            const float warmTFactor = isFloor ? 0.35f : 1.0f;
+            const float warmWFactor = isFloor ? 0.00f : 1.0f;
+
+            float n0 = c.normalImpulse * (warmN * warmNFactor);
 
             Vec3 t0 = {0.0f, 0.0f, 0.0f};
             float w0 = 0.0f;
 
+            Vec3 rA0 = m.points[i].pointWorld - m.a->position;
+            Vec3 vA0 = m.a->velocity + Vec3::cross(m.a->angularVelocity, rA0);
+            Vec3 vB0 = {0.0f, 0.0f, 0.0f};
+            if (m.b) {
+                Vec3 rB0 = m.points[i].pointWorld - m.b->position;
+                vB0 = m.b->velocity + Vec3::cross(m.b->angularVelocity, rB0);
+            }
+            Vec3 relV0 = vB0 - vA0;
+            float vn0 = Vec3::dot(relV0, m.normal);
+            Vec3 vt0 = relV0 - m.normal * vn0;
+            const bool nearRest = (fabsf(vn0) < 0.50f) && (vt0.lengthSq() < (0.50f * 0.50f));
+
             if (m.points[i].penetration > -0.01f) {
                 if (!hasMesh) {
-                    t0 = c.tangentImpulse * warmT;
-                    t0 = t0 - m.normal * Vec3::dot(t0, m.normal);
+                    if (nearRest) {
+                        t0 = c.tangentImpulse * (warmT * warmTFactor);
+                        t0 = t0 - m.normal * Vec3::dot(t0, m.normal);
 
-                    if (nAlign >= minTwistAlign) { w0 = c.twistImpulse * warmW; }
+                        if (nAlign >= minTwistAlign) { w0 = c.twistImpulse * (warmW * warmWFactor); }
+                    }
                 }
 
                 float tLenSq = t0.x * t0.x + t0.y * t0.y + t0.z * t0.z;
@@ -954,7 +865,7 @@ void PhysicsWorld::warmStartContacts(std::vector<ContactManifold>& ms) {
     }
 }
 
-void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const RigidBody* boxBody, std::vector<ContactManifold>& out, int maxManifolds) const {
+void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const RigidBody* boxBody, std::vector<ContactManifold*>& out, int maxManifolds, FrameAllocator& allocator) const {
     if (!meshBody || !boxBody) return;
     if (maxManifolds <= 0) return;
     if (!meshBody->collider.mesh) return;
@@ -1179,12 +1090,12 @@ void PhysicsWorld::appendMeshBoxManifolds(const RigidBody* meshBody, const Rigid
         }
 
         if (m.count > 0) {
-            out.push_back(m);
+            out.push_back(allocator.newObject<ContactManifold>(m));
         }
     }
 }
 
-void PhysicsWorld::appendMeshConvexManifolds(const RigidBody* meshBody, const RigidBody* convexBody, std::vector<ContactManifold>& out, int maxManifolds) const {
+void PhysicsWorld::appendMeshConvexManifolds(const RigidBody* meshBody, const RigidBody* convexBody, std::vector<ContactManifold*>& out, int maxManifolds, FrameAllocator& allocator) const {
     if (!meshBody || !convexBody) return;
     if (maxManifolds <= 0) return;
     if (!meshBody->collider.mesh) return;
@@ -1362,7 +1273,7 @@ void PhysicsWorld::appendMeshConvexManifolds(const RigidBody* meshBody, const Ri
         }
 
         if (m.count > 0) {
-            out.push_back(m);
+            out.push_back(allocator.newObject<ContactManifold>(m));
         }
     }
 }
@@ -1840,9 +1751,11 @@ bool PhysicsWorld::collideBoxBox(RigidBody* a, RigidBody* b, ContactManifold& m)
     return true;
 }
 
-void PhysicsWorld::computeRestitutionTargets(std::vector<ContactManifold>& ms) {
-    constexpr float restitutionVelThreshold = 0.08f;
-    for (ContactManifold& m : ms) {
+void PhysicsWorld::computeRestitutionTargets(std::vector<ContactManifold*>& ms) {
+    constexpr float restitutionVelThreshold = 1.0f;
+    for (ContactManifold* mPtr : ms) {
+        if (!mPtr) continue;
+        ContactManifold& m = *mPtr;
         if (!m.a) continue;
         for (int i = 0; i < m.count; ++i) {
             ContactPointState& cp = m.points[i];
@@ -1856,12 +1769,9 @@ void PhysicsWorld::computeRestitutionTargets(std::vector<ContactManifold>& ms) {
             }
             Vec3 relV = vB - vA;
             float vn = Vec3::dot(relV, m.normal);
+            
             if (vn < -restitutionVelThreshold) {
                 cp.targetNormalVelocity = -m.restitution * vn;
-            } else if (vn < 0.0f) {
-                float speedRatio = (-vn) / restitutionVelThreshold;
-                float restitutionScale = speedRatio * speedRatio;
-                cp.targetNormalVelocity = -m.restitution * vn * restitutionScale;
             } else {
                 cp.targetNormalVelocity = 0.0f;
             }
@@ -1869,18 +1779,11 @@ void PhysicsWorld::computeRestitutionTargets(std::vector<ContactManifold>& ms) {
     }
 }
 
-void PhysicsWorld::solveContacts(std::vector<ContactManifold>& ms, bool applyPositionCorrection) {
-    std::vector<ContactManifold*> ptrs;
-    ptrs.reserve(ms.size());
-    for (auto& m : ms) ptrs.push_back(&m);
-    solveContacts(ptrs, applyPositionCorrection);
-}
-
 void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool applyPositionCorrection) {
-    constexpr float slop = 0.005f;
+    const float slop = contactSlop;
     constexpr float shockLowerInvScale = 0.35f;
     constexpr float shockNormalY = 0.65f;
-    const float beta = 0.2f;
+    const float beta = baumgarteBeta;
 
     for (ContactManifold* mPtr : ms) {
         if (!mPtr) continue;
@@ -1921,12 +1824,35 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
             return invInertiaWorldMul(body, v) * invScale;
         };
 
+        auto applyImpulseRestAware = [&](RigidBody* body, const Vec3& impulse, const Vec3& r, bool isSupportImpulse) {
+            if (!body) return;
+            if (body->isStatic) return;
+            if (body->sleeping) return;
+            if (body->mass <= 0.0001f) return;
+            float jMag = impulse.length();
+            float needed = restWakeAccel * body->mass * std::max(1e-5f, currentDt);
+            if (!isSupportImpulse && body->restLocked && jMag < needed) return;
+            if (body->restLocked && (isSupportImpulse || jMag >= needed)) { body->restLocked = false; body->restLockTimer = 0.0f; }
+            float invMass = 1.0f / body->mass;
+            body->velocity = body->velocity + impulse * invMass;
+            Vec3 dW = invInertiaWorldMul(body, Vec3::cross(r, impulse));
+            body->angularVelocity = body->angularVelocity + dW;
+        };
+
+        auto applyAngularRestAware = [&](RigidBody* body, const Vec3& axisImpulse) {
+            if (!body) return;
+            if (body->isStatic) return;
+            if (body->sleeping) return;
+            Vec3 dW = invInertiaWorldMul(body, axisImpulse);
+            float dw = dW.length();
+            if (body->restLocked && dw < restWakeAngularSpeed) return;
+            if (body->restLocked && dw >= restWakeAngularSpeed) { body->restLocked = false; body->restLockTimer = 0.0f; }
+            body->angularVelocity = body->angularVelocity + dW;
+        };
+
         bodyA->hadContactThisStep = true;
-        bodyA->sleeping = false;
-        bodyA->sleepTimer = 0.0f;
-        if (bodyB && !bodyB->isStatic) {
+        if (bodyB && !bodyB->isStatic && !bodyB->sleeping) {
             bodyB->hadContactThisStep = true;
-            if (!bodyB->sleeping) { bodyB->sleepTimer = 0.0f; }
         }
 
         (void)applyPositionCorrection;
@@ -1934,7 +1860,13 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
         Vec3 t1, t2;
         PhysicsWorld::buildFrictionBasis(normal, t1, t2);
 
-        float baumgarteFactor = beta / currentDt;
+        float baumgarteFactor = (currentDt > 0.0f) ? (beta / currentDt) : 0.0f;
+
+        float ra = (bodyA) ? characteristicContactRadius(bodyA) : contactSlop;
+        float rb = (bodyB) ? characteristicContactRadius(bodyB) : contactSlop;
+        float rMin = std::max(0.00005f, std::min(ra > 0.0f ? ra : contactSlop, rb > 0.0f ? rb : contactSlop));
+        float effSlop = std::min(contactSlop, rMin * 0.10f);
+        float effBiasCap = maxBaumgarteBias;
 
         for (int ci = 0; ci < m.count; ++ci) {
             ContactPointState& cp = m.points[ci];
@@ -1957,9 +1889,9 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
 
                 if (denomN > 1e-20f) {
                     float bias = 0.0f;
-                    if (cp.penetration > slop) {
-                        bias = baumgarteFactor * (cp.penetration - slop);
-                        if (bias > 2.0f) bias = 2.0f;
+                    if (cp.penetration > effSlop) {
+                        bias = baumgarteFactor * (cp.penetration - effSlop);
+                        if (bias > effBiasCap) bias = effBiasCap;
                     }
 
                     float desired = -(vn - cp.targetNormalVelocity - bias) / denomN;
@@ -1970,11 +1902,12 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
                     cp.normalImpulse = newN;
 
                     Vec3 Jn = normal * dN;
+                    bool support = (m.b == nullptr) || (normal.y > 0.3f); // floor or upward normal
                     if (bodyB) {
-                        applyImpulseAtPoint(bodyA, -Jn, p);
-                        applyImpulseAtPoint(bodyB, Jn, p);
+                        applyImpulseRestAware(bodyA, -Jn, rA, support);
+                        applyImpulseRestAware(bodyB, Jn, rB, support);
                     } else {
-                        applyImpulseAtPoint(bodyA, -Jn, p);
+                        applyImpulseRestAware(bodyA, -Jn, rA, support);
                     }
                 }
             }
@@ -2015,6 +1948,13 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
                 }
                 float nRef = cp.normalImpulse;
                 float maxF = m.friction * nRef;
+
+                float vn = Vec3::dot(relV, normal);
+                Vec3 vTangential = relV - normal * vn;
+                if (vTangential.lengthSq() < 0.01f) { 
+                    maxF *= 2.5f; 
+                }
+
                 float magSq = newT1 * newT1 + newT2 * newT2;
                 if (magSq > maxF * maxF && magSq > 1e-12f) {
                     float invMag = 1.0f / sqrtf(magSq);
@@ -2080,17 +2020,10 @@ void PhysicsWorld::solveContacts(const std::vector<ContactManifold*>& ms, bool a
     }
 }
 
-void PhysicsWorld::solveRestingFriction(std::vector<ContactManifold>& ms, int passes) {
-    std::vector<ContactManifold*> ptrs;
-    ptrs.reserve(ms.size());
-    for (auto& m : ms) ptrs.push_back(&m);
-    solveRestingFriction(ptrs, passes);
-}
-
 void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms, int passes) {
     if (passes <= 0) return;
 
-    constexpr float slop = 0.005f;
+    const float slop = contactSlop;
     constexpr float shockLowerInvScale = 0.35f;
     constexpr float shockNormalY = 0.65f;
 
@@ -2141,13 +2074,39 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
 
             float maxPen = 0.0f;
             for (int i = 0; i < m.count; ++i) if (m.points[i].penetration > maxPen) maxPen = m.points[i].penetration;
-            if (maxPen <= slop) continue;
+            if (bodyB != nullptr && maxPen <= slop) continue;
 
             auto invInertiaWorldMulScaled = [&](const RigidBody* body, const Vec3& v, float invScale) -> Vec3 {
                 if (!body) return {0.0f, 0.0f, 0.0f};
                 if (body->isStatic) return {0.0f, 0.0f, 0.0f};
                 if (body->sleeping) return {0.0f, 0.0f, 0.0f};
                 return invInertiaWorldMul(body, v) * invScale;
+            };
+
+            auto applyImpulseRestAware = [&](RigidBody* body, const Vec3& impulse, const Vec3& r, bool isSupportImpulse) {
+                if (!body) return;
+                if (body->isStatic) return;
+                if (body->sleeping) return;
+                if (body->mass <= 0.0001f) return;
+                float jMag = impulse.length();
+                float needed = restWakeAccel * body->mass * std::max(1e-5f, currentDt);
+                if (!isSupportImpulse && body->restLocked && jMag < needed) return;
+                if (body->restLocked && (isSupportImpulse || jMag >= needed)) { body->restLocked = false; body->restLockTimer = 0.0f; }
+                float invMass = 1.0f / body->mass;
+                body->velocity = body->velocity + impulse * invMass;
+                Vec3 dW = invInertiaWorldMul(body, Vec3::cross(r, impulse));
+                body->angularVelocity = body->angularVelocity + dW;
+            };
+
+            auto applyAngularRestAware = [&](RigidBody* body, const Vec3& axisImpulse) {
+                if (!body) return;
+                if (body->isStatic) return;
+                if (body->sleeping) return;
+                Vec3 dW = invInertiaWorldMul(body, axisImpulse);
+                float dw = dW.length();
+                if (body->restLocked && dw < restWakeAngularSpeed) return;
+                if (body->restLocked && dw >= restWakeAngularSpeed) { body->restLocked = false; body->restLockTimer = 0.0f; }
+                body->angularVelocity = body->angularVelocity + dW;
             };
 
             float invCount = 1.0f / (float)m.count;
@@ -2204,7 +2163,14 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
                 }
 
                 float nRef = (cp.normalImpulse > supportImpulse) ? cp.normalImpulse : supportImpulse;
-                float maxF = m.friction * nRef;
+                float frictionBoost = 1.5f; 
+                float maxF = m.friction * nRef * frictionBoost;
+
+                Vec3 vTangential = relV - normal * vn;
+                if (vTangential.lengthSq() < 0.01f) { 
+                    maxF *= 2.0f; 
+                }
+
                 float magSq = newT1 * newT1 + newT2 * newT2;
                 if (magSq > maxF * maxF && magSq > 1e-12f) {
                     float invMag = 1.0f / sqrtf(magSq);
@@ -2219,10 +2185,10 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
                     Vec3 Jt = t1 * dT1 + t2 * dT2;
                     cp.tangentImpulse = t1 * newT1 + t2 * newT2;
                     if (bodyB) {
-                        applyImpulseAtPoint(bodyA, -Jt, p);
-                        applyImpulseAtPoint(bodyB, Jt, p);
+                        applyImpulseRestAware(bodyA, -Jt, rA, false);
+                        applyImpulseRestAware(bodyB, Jt, rB, false);
                     } else {
-                        applyImpulseAtPoint(bodyA, -Jt, p);
+                        applyImpulseRestAware(bodyA, -Jt, rA, false);
                     }
                 }
 
@@ -2245,10 +2211,10 @@ void PhysicsWorld::solveRestingFriction(const std::vector<ContactManifold*>& ms,
 
                         if (dTw != 0.0f) {
                             if (bodyB) {
-                                applyAngularImpulse(bodyA, normal * (-dTw));
-                                applyAngularImpulse(bodyB, normal * (dTw));
+                                applyAngularRestAware(bodyA, normal * (-dTw));
+                                applyAngularRestAware(bodyB, normal * (dTw));
                             } else {
-                                applyAngularImpulse(bodyA, normal * (-dTw));
+                                applyAngularRestAware(bodyA, normal * (-dTw));
                             }
                         }
                     }
@@ -2458,7 +2424,7 @@ void PhysicsWorld::solveHingeJoints(const std::vector<HingeJoint*>& joints, floa
     }
 }
 
-void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
+void PhysicsWorld::solveIslands(std::vector<ContactManifold*>& contacts) {
     int dynamicCount = 0;
     for (RigidBody* b : bodies) {
         if (!b) continue;
@@ -2490,7 +2456,9 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
         if (rootI != rootJ) islandParentBuffer[rootI] = rootJ;
     };
 
-    for (const auto& m : contacts) {
+    for (const ContactManifold* mPtr : contacts) {
+        if (!mPtr) continue;
+        const ContactManifold& m = *mPtr;
         if (m.a && m.b && !m.a->isStatic && !m.b->isStatic && 
             m.a->solverIndex != -1 && m.b->solverIndex != -1) {
              unite(m.a->solverIndex, m.b->solverIndex);
@@ -2539,7 +2507,9 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
     
     int islandCount = 0;
     
-    for (auto& m : contacts) {
+    for (ContactManifold* mPtr : contacts) {
+        if (!mPtr) continue;
+        ContactManifold& m = *mPtr;
         RigidBody* dyn = nullptr;
         if (m.a && !m.a->isStatic && m.a->solverIndex != -1) dyn = m.a;
         else if (m.b && !m.b->isStatic && m.b->solverIndex != -1) dyn = m.b;
@@ -2556,7 +2526,7 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
             islandJointsBuffer[islandId].clear();
             islandHingeJointsBuffer[islandId].clear();
         }
-        islandBuffer[islandId].push_back(&m);
+        islandBuffer[islandId].push_back(mPtr);
     }
 
     for (auto& j : ballSocketJoints) {
@@ -2634,7 +2604,9 @@ void PhysicsWorld::solveIslands(std::vector<ContactManifold>& contacts) {
         }
     }
 
-    for (const auto& m : contacts) {
+    for (ContactManifold* mPtr : contacts) {
+        if (!mPtr) continue;
+        const ContactManifold& m = *mPtr;
         RigidBody* bodyA = m.a;
         RigidBody* bodyB = m.b;
         Vec3 normal = m.normal;
@@ -2681,7 +2653,7 @@ void PhysicsWorld::orientNormalForPair(ContactManifold& m, const RigidBody* a, c
     if (Vec3::dot(m.normal, ab) < 0.0f) m.normal = -m.normal;
 }
 
-void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out, EPAScratch& epaScratch) {
+void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold*>& out, EPAScratch& epaScratch, FrameAllocator& allocator) {
     if (!a || !b) return;
     if (a->isStatic && b->isStatic) return;
     if (a->sleeping && b->sleeping) return;
@@ -2698,12 +2670,14 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
 
     if (!aCompound && !bCompound) {
         if (a->collider.type == ColliderType::Mesh || b->collider.type == ColliderType::Mesh) {
-            appendBodyBodyMeshContacts(a, b, out);
+            appendBodyBodyMeshContacts(a, b, out, allocator);
             return;
         }
 
         ContactManifold m;
-        if (detectBodyBodyConvex(a, b, m, epaScratch)) out.push_back(m);
+        if (detectBodyBodyConvex(a, b, m, epaScratch)) {
+            out.push_back(allocator.newObject<ContactManifold>(m));
+        }
         return;
     }
 
@@ -2729,7 +2703,7 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
                     }
                     mChild.a = a;
                     mChild.b = b;
-                    out.push_back(mChild);
+                    out.push_back(allocator.newObject<ContactManifold>(mChild));
                     if (++emitted >= maxManifoldsPerPair) return;
                 }
             }
@@ -2744,14 +2718,15 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
             float ra = ca.collider.boundingRadius();
 
             if (bIsMesh) {
-                std::vector<ContactManifold> temp;
+                std::vector<ContactManifold*> temp;
                 temp.reserve(4);
-                appendBodyBodyMeshContacts(b, &pa, temp);
-                for (auto& m : temp) {
+                appendBodyBodyMeshContacts(b, &pa, temp, allocator);
+                for (ContactManifold* mPtr : temp) {
+                    ContactManifold& m = *mPtr;
                     m.a = a;
                     m.b = b;
                     orientNormalForPair(m, m.a, m.b);
-                    out.push_back(m);
+                    out.push_back(mPtr);
                     if (++emitted >= maxManifoldsPerPair) return;
                 }
             } else {
@@ -2768,7 +2743,7 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
                     }
                     mChild.a = a;
                     mChild.b = b;
-                    out.push_back(mChild);
+                    out.push_back(allocator.newObject<ContactManifold>(mChild));
                     if (++emitted >= maxManifoldsPerPair) return;
                 }
             }
@@ -2782,14 +2757,15 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
         float rb = cb.collider.boundingRadius();
 
         if (aIsMesh) {
-            std::vector<ContactManifold> temp;
+            std::vector<ContactManifold*> temp;
             temp.reserve(4);
-            appendBodyBodyMeshContacts(a, &pb, temp);
-            for (auto& m : temp) {
+            appendBodyBodyMeshContacts(a, &pb, temp, allocator);
+            for (ContactManifold* mPtr : temp) {
+                ContactManifold& m = *mPtr;
                 m.a = a;
                 m.b = b;
                 orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
+                out.push_back(mPtr);
                 if (++emitted >= maxManifoldsPerPair) return;
             }
         } else {
@@ -2806,7 +2782,7 @@ void PhysicsWorld::appendBodyBodyContacts(RigidBody* a, RigidBody* b, std::vecto
                 }
                 mChild.a = a;
                 mChild.b = b;
-                out.push_back(mChild);
+                out.push_back(allocator.newObject<ContactManifold>(mChild));
                 if (++emitted >= maxManifoldsPerPair) return;
             }
         }
@@ -2912,6 +2888,16 @@ void PhysicsWorld::applyImpulseAtPoint(RigidBody* body, const Vec3& impulse, con
     if (body->isStatic) return;
     if (body->mass <= 0.0001f) return;
 
+    const float dt = (currentDt > 0.0f) ? currentDt : (1.0f / 60.0f);
+    if (body->restLocked) {
+        float accel = impulse.length() * (1.0f / (body->mass * std::max(1e-5f, dt)));
+        if (accel < restWakeAccel) {
+            return;
+        }
+        body->restLocked = false;
+        body->restLockTimer = 0.0f;
+    }
+
     if (body->sleeping) {
         if (!wake) return;
         constexpr float wakeImpulse = 0.35f;
@@ -2933,6 +2919,14 @@ void PhysicsWorld::applyImpulseAtPoint(RigidBody* body, const Vec3& impulse, con
 
 void PhysicsWorld::applyAngularImpulse(RigidBody* body, const Vec3& angularImpulseWorld, bool wake) {
     if (body->isStatic) return;
+    const float dt = (currentDt > 0.0f) ? currentDt : (1.0f / 60.0f);
+    if (body->restLocked) {
+        Vec3 dW = invInertiaWorldMul(body, angularImpulseWorld);
+        float dw = dW.length();
+        if (dw < restWakeAngularSpeed) return; // ignore tiny twist
+        body->restLocked = false;
+        body->restLockTimer = 0.0f;
+    }
     if (body->sleeping) {
         if (!wake) return;
         constexpr float wakeAngImpulse = 0.20f;
@@ -3020,7 +3014,7 @@ Vec3 PhysicsWorld::closestPtPointTriangle(const Vec3& p, const Vec3& a, const Ve
     return a + ab * v + ac * w;
 }
 
-void PhysicsWorld::appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold>& out) {
+void PhysicsWorld::appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::vector<ContactManifold*>& out, FrameAllocator& allocator) {
     if (!a || !b) return;
     if (a->isStatic && b->isStatic) return;
     if (a->sleeping && b->sleeping) return;
@@ -3042,14 +3036,14 @@ void PhysicsWorld::appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::v
                 m.a = a;
                 m.b = b;
                 orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
+                out.push_back(allocator.newObject<ContactManifold>(m));
             } else {
                 std::swap(m.a, m.b);
                 m.normal = -m.normal;
                 m.a = a;
                 m.b = b;
                 orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
+                out.push_back(allocator.newObject<ContactManifold>(m));
             }
             ++emitted;
         } else if (otherBody->collider.type == ColliderType::Capsule) {
@@ -3060,56 +3054,60 @@ void PhysicsWorld::appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::v
                 m.a = a;
                 m.b = b;
                 orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
+                out.push_back(allocator.newObject<ContactManifold>(m));
             } else {
                 std::swap(m.a, m.b);
                 m.normal = -m.normal;
                 m.a = a;
                 m.b = b;
                 orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
+                out.push_back(allocator.newObject<ContactManifold>(m));
             }
             ++emitted;
         } else if (otherBody->collider.type == ColliderType::Box) {
-            ContactManifold m;
-            hit = collideMeshBox(meshBody, otherBody, m);
-            if (!hit) return;
-
-            if (otherIsB) {
-                m.a = a;
-                m.b = b;
-                orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
-            } else {
-                std::swap(m.a, m.b);
-                m.normal = -m.normal;
-                m.a = a;
-                m.b = b;
-                orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
-            }
-
-            ++emitted;
-            return;
-        } else if (otherBody->collider.type == ColliderType::Convex) {
-            std::vector<ContactManifold> tmp;
+            std::vector<ContactManifold*> tmp;
             tmp.reserve(4);
-            appendMeshConvexManifolds(meshBody, otherBody, tmp, maxManifolds - emitted);
+            appendMeshBoxManifolds(meshBody, otherBody, tmp, maxManifolds - emitted, allocator);
             if (tmp.empty()) return;
 
-            for (ContactManifold& m : tmp) {
+            for (ContactManifold* mPtr : tmp) {
+                ContactManifold& m = *mPtr;
                 if (otherIsB) {
                     m.a = a;
                     m.b = b;
                     orientNormalForPair(m, m.a, m.b);
-                    out.push_back(m);
+                    out.push_back(mPtr);
                 } else {
                     std::swap(m.a, m.b);
                     m.normal = -m.normal;
                     m.a = a;
                     m.b = b;
                     orientNormalForPair(m, m.a, m.b);
-                    out.push_back(m);
+                    out.push_back(mPtr);
+                }
+                if (++emitted >= maxManifolds) break;
+            }
+            return;
+        } else if (otherBody->collider.type == ColliderType::Convex) {
+            std::vector<ContactManifold*> tmp;
+            tmp.reserve(4);
+            appendMeshConvexManifolds(meshBody, otherBody, tmp, maxManifolds - emitted, allocator);
+            if (tmp.empty()) return;
+
+            for (ContactManifold* mPtr : tmp) {
+                ContactManifold& m = *mPtr;
+                if (otherIsB) {
+                    m.a = a;
+                    m.b = b;
+                    orientNormalForPair(m, m.a, m.b);
+                    out.push_back(mPtr);
+                } else {
+                    std::swap(m.a, m.b);
+                    m.normal = -m.normal;
+                    m.a = a;
+                    m.b = b;
+                    orientNormalForPair(m, m.a, m.b);
+                    out.push_back(mPtr);
                 }
                 if (++emitted >= maxManifolds) break;
             }
@@ -3129,14 +3127,14 @@ void PhysicsWorld::appendBodyBodyMeshContacts(RigidBody* a, RigidBody* b, std::v
                 m.a = a;
                 m.b = b;
                 orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
+                out.push_back(allocator.newObject<ContactManifold>(m));
             } else {
                 std::swap(m.a, m.b);
                 m.normal = -m.normal;
                 m.a = a;
                 m.b = b;
                 orientNormalForPair(m, m.a, m.b);
-                out.push_back(m);
+                out.push_back(allocator.newObject<ContactManifold>(m));
             }
             ++emitted;
         }

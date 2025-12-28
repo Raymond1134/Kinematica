@@ -17,6 +17,8 @@ struct RigidBody {
     bool sleeping = false;
     bool visible = true;
     float sleepTimer = 0.0f;
+    float restLockTimer = 0.0f;
+    bool restLocked = false;
     bool hadContactThisStep = false;
     int solverIndex = -1;
     int groupId = 0;
