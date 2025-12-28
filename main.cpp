@@ -344,11 +344,56 @@ int main() {
         physicsWorld.floorFriction = std::clamp(floorMaterial.friction, 0.0f, 2.0f);
         physicsWorld.floorRestitution = std::clamp(floorMaterial.restitution, 0.0f, 1.0f);
 
+        Vec3 frameCamPos = renderer.getCameraPosition();
+        Vec3 frameCamFwd = renderer.getCameraForward();
+        if (frameCamFwd.lengthSq() > 1e-12f) frameCamFwd = frameCamFwd.normalized();
+        RayHit frameRayHit = Raycast::raycastWorldPlacement(frameCamPos, frameCamFwd, physicsWorld.floorY, dynamicBodies);
+        Vec3 framePlacePoint = frameCamPos + frameCamFwd * 2.0f;
+        Vec3 framePlaceNormal = {0.0f, 1.0f, 0.0f};
+        if (frameRayHit.hit) { framePlacePoint = frameRayHit.point; framePlaceNormal = frameRayHit.normal; }
+
+        Vec3 lastHologramPos = framePlacePoint;
+        Quat lastHologramOri = Quat::identity();
+        bool hologramValid = false;
+        {
+            RigidBody tmp;
+            tmp.position = framePlacePoint;
+            tmp.orientation = Quat::identity();
+            float s = std::clamp(currentSize, 0.10f, 1.25f);
+            switch (currentShape) {
+                case SpawnShape::Sphere:
+                    tmp.collider = Collider::createSphere(s);
+                    break;
+                case SpawnShape::Cube:
+                    tmp.collider = Collider::createBox({s, s, s});
+                    break;
+                case SpawnShape::Capsule: {
+                    float hh = s * 0.6f;
+                    float r = s * 0.33f;
+                    tmp.collider = Collider::createCapsule(r, hh);
+                    break;
+                }
+                case SpawnShape::Tetrahedron: {
+                    auto verts = MeshGen::makeTetraVerts(s);
+                    tmp.collider = Collider::createConvex(verts);
+                    break;
+                }
+                default: {
+                    tmp.collider = Collider::createBox({s, s, s});
+                    break;
+                }
+            }
+
+            float off = Raycast::placementOffsetAlongNormal(tmp.collider, tmp.orientation, framePlaceNormal);
+            lastHologramPos = framePlacePoint + framePlaceNormal.normalized() * (off + 0.002f);
+            lastHologramOri = tmp.orientation;
+            hologramValid = true;
+        }
+
         if (IsKeyPressed(KEY_Q)) {
             const bool shiftDown = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-            Vec3 camPos = renderer.getCameraPosition();
-            Vec3 camFwd = renderer.getCameraForward();
-            camFwd = camFwd.normalized();
+            Vec3 camPos = frameCamPos;
+            Vec3 camFwd = frameCamFwd;
 
             Vec3 up = {0.0f, 1.0f, 0.0f};
             Vec3 right = Vec3::cross(up, camFwd).normalized();
@@ -359,12 +404,8 @@ int main() {
                 if (spawnMode == SpawnMode::Throw) {
                     startPos = camPos + camFwd * 2.0f;
                 } else {
-                    RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                    if (hit.hit) {
-                        startPos = hit.point + hit.normal * 0.1f;
-                    } else {
-                        startPos = camPos + camFwd * 5.0f;
-                    }
+                    if (hologramValid) startPos = lastHologramPos;
+                    else startPos = framePlacePoint + framePlaceNormal * 0.1f;
                 }
 
                 float radius = currentSize * 0.5f;
@@ -393,12 +434,8 @@ int main() {
                 if (spawnMode == SpawnMode::Throw) {
                     startPos = camPos + camFwd * 2.0f;
                 } else {
-                    RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                    if (hit.hit) {
-                        startPos = hit.point + hit.normal * 0.5f;
-                    } else {
-                        startPos = camPos + camFwd * 5.0f;
-                    }
+                    if (hologramValid) startPos = lastHologramPos;
+                    else startPos = framePlacePoint + framePlaceNormal * 0.5f;
                 }
                 
                 bool isStatic = (spawnMode == SpawnMode::PlaceStatic);
@@ -431,12 +468,8 @@ int main() {
                 if (spawnMode == SpawnMode::Throw) {
                     startPos = camPos + camFwd * 3.0f;
                 } else {
-                    RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                    if (hit.hit) {
-                        startPos = hit.point + hit.normal * 1.0f;
-                    } else {
-                        startPos = camPos + camFwd * 5.0f;
-                    }
+                    if (hologramValid) startPos = lastHologramPos;
+                    else startPos = framePlacePoint + framePlaceNormal * 1.0f;
                 }
 
                 int rows = 14;
@@ -457,12 +490,8 @@ int main() {
                 if (spawnMode == SpawnMode::Throw) {
                     startPos = camPos + camFwd * 3.0f;
                 } else {
-                    RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                    if (hit.hit) {
-                        startPos = hit.point + hit.normal * 1.5f;
-                    } else {
-                        startPos = camPos + camFwd * 5.0f;
-                    }
+                    if (hologramValid) startPos = lastHologramPos;
+                    else startPos = framePlacePoint + framePlaceNormal * 1.5f;
                 }
 
                 int dim = 3;
@@ -482,7 +511,7 @@ int main() {
                 state.carBody = nullptr;
             } else {
                 RigidBody b;
-                b.position = camPos + camFwd * 2.0f;
+                b.position = framePlacePoint;
                 b.velocity = {0.0f, 0.0f, 0.0f};
                 b.orientation = Quat::identity();
                 b.angularVelocity = {0.0f, 0.0f, 0.0f};
@@ -500,6 +529,15 @@ int main() {
                     float spin = 7.0f;
                     float spinJitter = (float)GetRandomValue(-5, 5) / 5.0f;
                     b.angularVelocity = right * (spin * (1.0f + 0.25f * spinJitter)) + up * (1.0f * spinJitter);
+                }
+
+                if (spawnMode != SpawnMode::Throw) {
+                    if (hologramValid) {
+                        b.position = lastHologramPos;
+                        b.orientation = lastHologramOri;
+                    } else {
+                        b.position = framePlacePoint;
+                    }
                 }
 
                 float s = std::clamp(currentSize, 0.10f, 1.25f);
@@ -523,11 +561,9 @@ int main() {
 
                 bool isStatic = (spawnMode == SpawnMode::PlaceStatic);
                 
-                // Calculate mass based on volume and density
                 float density = std::max(1.0f, currentMaterial.density);
-                float mass = 1.0f; // Placeholder, will be calculated inside factory or here if needed
-                
-                // Helper to calculate volume for simple shapes
+                float mass = 1.0f;
+
                 auto calcVolume = [&](float vol) {
                     return std::max(0.05f, density * vol);
                 };
@@ -659,7 +695,7 @@ int main() {
                         rb->useExplicitInertia = true;
                         rb->explicitInvInertia = {
                             (I_perp > 0.0001f) ? 1.0f/I_perp : 0.0f,
-                            (I_axis > 0.0001f) ? 1.0f/I_axis : 0.0f, // Y is up (axis of torus)
+                            (I_axis > 0.0001f) ? 1.0f/I_axis : 0.0f,
                             (I_perp > 0.0001f) ? 1.0f/I_perp : 0.0f
                         };
                         break;
@@ -673,15 +709,13 @@ int main() {
                     rb->sleepTimer = (spawnMode != SpawnMode::Throw) ? 1.0f : 0.0f;
 
                     if (spawnMode != SpawnMode::Throw) {
-                        RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                        Vec3 placePoint = camPos + camFwd * 2.0f;
-                        Vec3 placeNormal = {0.0f, 1.0f, 0.0f};
-                        if (hit.hit) {
-                            placePoint = hit.point;
-                            placeNormal = hit.normal;
+                        if (hologramValid) {
+                            rb->position = lastHologramPos;
+                            rb->orientation = lastHologramOri;
+                        } else {
+                            float offset = Raycast::placementOffsetAlongNormal(rb->collider, rb->orientation, framePlaceNormal);
+                            rb->position = framePlacePoint + framePlaceNormal.normalized() * (offset + 0.002f);
                         }
-                        float offset = Raycast::placementOffsetAlongNormal(rb->collider, rb->orientation, placeNormal);
-                        rb->position = placePoint + placeNormal.normalized() * (offset + 0.002f);
                         rb->velocity = {0.0f, 0.0f, 0.0f};
                         rb->angularVelocity = {0.0f, 0.0f, 0.0f};
                     }
@@ -877,13 +911,8 @@ int main() {
             if (spawnMode != SpawnMode::Throw) {
                 Vec3 camFwd = renderer.getCameraForward().normalized();
                 const bool shiftDown = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-                RayHit hit = Raycast::raycastWorldPlacement(camPos, camFwd, physicsWorld.floorY, dynamicBodies);
-                Vec3 placePoint = camPos + camFwd * 2.0f;
-                Vec3 placeNormal = {0.0f, 1.0f, 0.0f};
-                if (hit.hit) {
-                    placePoint = hit.point;
-                    placeNormal = hit.normal;
-                }
+                Vec3 placePoint = framePlacePoint;
+                Vec3 placeNormal = framePlaceNormal;
 
                 Renderer::RenderStyle holo;
                 holo.color = Color{0, 190, 255, 90};
@@ -898,6 +927,9 @@ int main() {
                     if (spawnMode == SpawnMode::PlaceStatic) {
                         startPos.y += (float)(chainLength - 1) * spacing;
                     }
+                    lastHologramPos = startPos;
+                    lastHologramOri = Quat::identity();
+                    hologramValid = true;
                     
                     for (int i = 0; i < chainLength; ++i) {
                         RigidBody linkGhost;
@@ -1007,6 +1039,10 @@ int main() {
 
                     float offset = Raycast::placementOffsetAlongNormal(ghost.collider, ghost.orientation, placeNormal);
                     ghost.position = placePoint + placeNormal.normalized() * (offset + 0.002f);
+
+                    lastHologramPos = ghost.position;
+                    lastHologramOri = ghost.orientation;
+                    hologramValid = true;
 
                     renderer.drawRigidBody(&ghost, holo);
                 }
@@ -1293,6 +1329,13 @@ int main() {
                 }
             }
         }
+
+            int cx = GetScreenWidth() / 2;
+            int cy = GetScreenHeight() / 2;
+            DrawLine(cx - 8, cy, cx + 8, cy, Color{0,0,0,255});
+            DrawLine(cx, cy - 8, cx, cy + 8, Color{0,0,0,255});
+            DrawLine(cx - 4, cy, cx + 4, cy, Color{235,235,235,255});
+            DrawLine(cx, cy - 4, cx, cy + 4, Color{235,235,235,255});
 
         renderer.endFrame();
     }
