@@ -59,7 +59,6 @@ public:
     float angularDampingPerSecond = 0.08f;
     float floorContactAngularDampingPerSecond = 1.50f;
 
-    // Contact-only damping for tiny residual jitter in resting stacks.
     float contactLinearDampingPerSecond = 8.00f;
     float contactAngularDampingPerSecond = 8.00f;
     float contactDampingMaxSpeed = 0.20f;
@@ -73,7 +72,6 @@ public:
     float baumgarteBeta = 0.30f;
     float maxBaumgarteBias = 4.00f;
 
-    // Extra friction-only passes for resting contacts.
     int restingFrictionExtraPasses = 20;
     float restingMaxNormalSpeed = 0.10f;
     float restingMaxBodySpeed = 0.80f;

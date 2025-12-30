@@ -7,13 +7,13 @@ A lightweight 3D physics engine and sandbox built with C++ and Raylib.
 
 ## Features
 
-- **Rigid Body Dynamics**: Box, Sphere, Capsule, Convex Hull, and Mesh colliders.
+- **Rigid Body Dynamics**: Sohere, Box, Capsule, Convex Hull, and Mesh colliders.
 - **Soft Body Dynamics**: Cloth simulation and Jelly-like blobs.
-- **Constraints**: Ball-Socket and Hinge joints.
 - **Compound Shapes**: Vehicles and complex objects.
+- **Constraints**: Ball-Socket and Hinge joints.
 - **Continuous Collision Detection (CCD)**: Prevents tunneling of fast-moving objects.
 - **Interactive Sandbox**: Spawn, throw, and manipulate objects in real-time.
-- **Visual Polish**: Lighting, instanced rendering, and clean UI.
+- **Visual Polish**: Lighting, holograms, instanced rendering, and clean UI.
 
 ## Controls
 

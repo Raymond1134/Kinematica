@@ -2,7 +2,7 @@
 
 ## Overview
 
-Kinematica is a lightweight 3D physics engine written in C++. It provides a simple API for creating and simulating rigid bodies, soft bodies, and constraints.
+Kinematica is a lightweight 3D physics engine written in C++.
 
 ## Units
 

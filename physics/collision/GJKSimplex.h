@@ -3,7 +3,6 @@
 #include "../../math/Vec3.h"
 #include "Simplex.h"
 
-// Handle line simplex (2 points)
 inline bool handleLine(Simplex& simplex, Vec3& direction) {
     // A is newest point
     SupportPoint A = simplex.verts[0];
@@ -42,7 +41,6 @@ inline bool handleLine(Simplex& simplex, Vec3& direction) {
     return false;
 }
 
-// Handle triangle simplex (3 points)
 inline bool handleTriangle(Simplex& simplex, Vec3& direction) {
     SupportPoint A = simplex.verts[0];
     SupportPoint B = simplex.verts[1];
@@ -134,7 +132,6 @@ inline bool handleTriangle(Simplex& simplex, Vec3& direction) {
     return false;
 }
 
-// Handle tetrahedron simplex (4 points)
 inline bool handleTetrahedron(Simplex& simplex, Vec3& direction) {
     SupportPoint A = simplex.verts[0];
     SupportPoint B = simplex.verts[1];

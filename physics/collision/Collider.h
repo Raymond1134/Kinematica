@@ -8,7 +8,6 @@
 #include "shapes/PolyhedronShape.h"
 #include "shapes/ConvexShape.h"
 #include "TriangleMesh.h"
-
 #include <vector>
 #include <algorithm>
 #include <cassert>

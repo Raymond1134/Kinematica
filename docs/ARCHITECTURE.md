@@ -2,7 +2,7 @@
 
 ## High-Level Overview
 
-Kinematica follows a standard rigid body physics engine architecture, utilizing a semi-implicit Euler integrator and a sequential impulse solver.
+Kinematica follows a standard rigid body physics engine architecture. It utilizes a semi-implicit Euler integrator and a sequential impulse solver.
 
 ### Simulation Loop (`PhysicsWorld::step`)
 
@@ -37,7 +37,7 @@ The simulation step is divided into several phases:
     - Integrate orientation: $q_{new} = q_{old} + 0.5 \cdot \omega \cdot q_{old} \cdot dt$.
 
 7.  **Sleeping**:
-    - Bodies with low energy for a duration are put to sleep to save performance.
+    - Bodies with low energy for a duration are put to sleep to improve performance.
     - Woken up by collisions or external forces.
 
 ## Key Components

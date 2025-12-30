@@ -73,18 +73,17 @@ enum class SpawnMode {
 int main() {
     DemoState state;
     const float FIXED_DT = 1.0f / 60.0f;
-    float accumulator = 0.0f;
-
     const int MAX_SUBSTEPS = 4;
+    float accumulator = 0.0f;
     
+    static std::unordered_map<int, std::shared_ptr<TriangleMesh>> torusRenderCache;
     PhysicsWorld physicsWorld;
     std::list<RigidBody> dynamicBodies;
-    PhysicsFactory physicsFactory(physicsWorld, dynamicBodies);
     std::vector<SoftBody> cloths;
     std::unordered_map<const RigidBody*, Renderer::RenderStyle> bodyStyles;
-    static std::unordered_map<int, std::shared_ptr<TriangleMesh>> torusRenderCache;
-
     std::vector<MaterialProps> presetMaterials = MaterialLoader::loadMaterialsFromFolder("materials");
+    PhysicsFactory physicsFactory(physicsWorld, dynamicBodies);
+
     MaterialProps customTemplate;
     customTemplate.name = "Custom";
     customTemplate.color = Color{155, 155, 155, 255};
@@ -112,7 +111,6 @@ int main() {
     float currentSize = 0.35f;
 
     SpawnMode spawnMode = SpawnMode::Throw;
-
 
     Renderer renderer;
     if (!renderer.init(1280, 720, "Kinematica Sandbox")) return -1;
@@ -180,15 +178,13 @@ int main() {
     };
 
     resetScene();
-
     SetExitKey(0);
 
     while (!WindowShouldClose()) {
         auto removeRigidBody = [&](RigidBody* victim) {
             if (!victim) return;
 
-            physicsWorld.springs.erase(
-                std::remove_if(
+            physicsWorld.springs.erase(std::remove_if(
                     physicsWorld.springs.begin(),
                     physicsWorld.springs.end(),
                     [&](const Spring& s) { return s.a == victim || s.b == victim; }),
@@ -292,24 +288,11 @@ int main() {
             }
         }
 
-        if (IsKeyPressed(KEY_R)) {
-            resetScene();
-        }
-
-        if (IsKeyPressed(KEY_P)) {
-            isPaused = !isPaused;
-        }
-
-        if (IsKeyPressed(KEY_PERIOD) && isPaused) {
-            singleStep = true;
-        }
-
-        if (IsKeyPressed(KEY_LEFT_BRACKET)) {
-            timeScale = std::max(0.1f, timeScale - 0.1f);
-        }
-        if (IsKeyPressed(KEY_RIGHT_BRACKET)) {
-            timeScale = std::min(5.0f, timeScale + 0.1f);
-        }
+        if (IsKeyPressed(KEY_R)) resetScene();
+        if (IsKeyPressed(KEY_P)) isPaused = !isPaused;
+        if (IsKeyPressed(KEY_PERIOD) && isPaused) singleStep = true;
+        if (IsKeyPressed(KEY_LEFT_BRACKET)) timeScale = std::max(0.1f, timeScale - 0.1f);
+        if (IsKeyPressed(KEY_RIGHT_BRACKET)) timeScale = std::min(5.0f, timeScale + 0.1f);
 
         if ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_ENTER)) {
             if (!IsWindowFullscreen()) {
@@ -331,6 +314,7 @@ int main() {
                 SetWindowPosition(windowedX, windowedY);
             }
         }
+        
         float frameTime = getDeltaTime();
         if (frameTime > 0.25f) frameTime = 0.25f;
         
@@ -456,7 +440,6 @@ int main() {
                 }
                 
                 state.carBody = chassisPtr;
-                printf("Car spawned at (%.2f, %.2f, %.2f)\n", chassisPtr->position.x, chassisPtr->position.y, chassisPtr->position.z);
                 
                 Renderer::RenderStyle st;
                 st.color = currentMaterial.color;
@@ -682,7 +665,6 @@ int main() {
                         float vol = 2.0f * 3.14159f * 3.14159f * majorR * minorR * minorR;
                         rb = physicsFactory.CreateCompound(b.position, children, currentMaterial, calcVolume(vol), isStatic, vel);
 
-                        // Explicit inertia tensor for Torus
                         float M = rb->mass;
                         float R = majorR;
                         float r = minorR;
@@ -711,7 +693,6 @@ int main() {
                     if (spawnMode != SpawnMode::Throw) {
                         if (hologramValid) {
                             rb->position = lastHologramPos;
-                            rb->orientation = lastHologramOri;
                         } else {
                             float offset = Raycast::placementOffsetAlongNormal(rb->collider, rb->orientation, framePlaceNormal);
                             rb->position = framePlacePoint + framePlaceNormal.normalized() * (offset + 0.002f);
@@ -1211,12 +1192,22 @@ int main() {
                         }
                     }
                 }
-                if (sel == -1) sel = (int)presetMaterials.size(); // Default to custom if not found
-
+                if (sel == -1) sel = (int)presetMaterials.size();
+                
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
+                int prevMatSel = matSelIndex;
                 matSelIndex = sel;
                 UI::Dropdown(102, r, matNames, &matSelIndex);
-                
+                if (matSelIndex != prevMatSel) {
+                    if (matSelIndex >= 0 && matSelIndex < (int)presetMaterials.size()) {
+                        currentMaterial = presetMaterials[matSelIndex];
+                        currentMaterialIsCustom = false;
+                    } else {
+                        if (!currentMaterialIsCustom) currentMaterial = customTemplate;
+                        currentMaterialIsCustom = true;
+                    }
+                }
+
                 y += 34.0f;
             }
 
@@ -1234,6 +1225,9 @@ int main() {
                 DrawText(buf, (int)x, (int)y, 14, Color{170, 170, 170, 255});
                 y += 18.0f;
                 if (changed) {
+                    if (!currentMaterialIsCustom) {
+                        currentMaterial = customTemplate;
+                    }
                     v = nv;
                     currentMaterialIsCustom = true;
                 }
@@ -1265,9 +1259,20 @@ int main() {
                 if (sel == -1) sel = (int)presetMaterials.size();
 
                 Rectangle r = {x, y, panel.width - 24.0f, 28.0f};
-                
+                int prevFloorSel = floorSelIndex;
                 floorSelIndex = sel;
                 UI::Dropdown(103, r, matNames, &floorSelIndex);
+
+                if (floorSelIndex != prevFloorSel) {
+                    if (floorSelIndex >= 0 && floorSelIndex < (int)presetMaterials.size()) {
+                        floorMaterial = presetMaterials[floorSelIndex];
+                        floorMaterialIsCustom = false;
+                    } else {
+                        if (!floorMaterialIsCustom) floorMaterial = customTemplate;
+                        floorMaterialIsCustom = true;
+                    }
+                }
+
                 y += 34.0f;
             }
 
@@ -1316,6 +1321,7 @@ int main() {
                         currentMaterial = presetMaterials[idx];
                         currentMaterialIsCustom = false;
                     } else {
+                        currentMaterial = customTemplate;
                         currentMaterialIsCustom = true;
                     }
                 } else if (changedId == 103) {
@@ -1324,6 +1330,7 @@ int main() {
                         floorMaterial = presetMaterials[idx];
                         floorMaterialIsCustom = false;
                     } else {
+                        floorMaterial = customTemplate;
                         floorMaterialIsCustom = true;
                     }
                 }

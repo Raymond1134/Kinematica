@@ -20,10 +20,8 @@ bool Renderer::init(int width, int height, const char* title) {
         sphereMesh = GenMeshSphere(1.0f, 16, 16);
         meshesInitialized = true;
 
-        // Load shader
         lightingShader = LoadShader("shaders/lighting_instancing.vs", "shaders/lighting.fs");
         
-        // Get shader locations
         lightingShader.locs[SHADER_LOC_MATRIX_MVP] = GetShaderLocation(lightingShader, "mvp");
         lightingShader.locs[SHADER_LOC_VECTOR_VIEW] = GetShaderLocation(lightingShader, "viewPos");
         lightingShader.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocationAttrib(lightingShader, "instanceTransform");
@@ -33,7 +31,6 @@ bool Renderer::init(int width, int height, const char* title) {
         locLightColor = GetShaderLocation(lightingShader, "lightColor");
         locAmbientColor = GetShaderLocation(lightingShader, "ambientColor");
 
-        // Set default lighting values
         Vector3 lightDir = Vector3Normalize({ -1.0f, -2.0f, -1.0f }); 
         SetShaderValue(lightingShader, locLightDir, &lightDir, SHADER_UNIFORM_VEC3);
         
@@ -60,12 +57,12 @@ void Renderer::beginFrame() {
         matGround = MatrixMultiply(MatrixTranslate(0.0f, -0.05f, 0.0f), matGround);
 
         unsigned int cInt = (150 << 24) | (150 << 16) | (150 << 8) | 255;
-        InstanceKey key = { cInt, true }; // Grid enabled
+        InstanceKey key = { cInt, true };
         cubeInstances[key].push_back(matGround);
     }
 
     BeginDrawing();
-    ClearBackground(Color{100, 190, 255, 255}); // Vibrant Blue Sky
+    ClearBackground(Color{100, 190, 255, 255});
 
     float yawRad = camYaw * (PI/180.0f);
     float pitchRad = camPitch * (PI/180.0f);
@@ -90,7 +87,6 @@ void Renderer::beginFrame() {
     BeginMode3D(mainCam);
     in3D = true;
 
-    // Update view position uniform
     float camPosArr[3] = { mainCam.position.x, mainCam.position.y, mainCam.position.z };
     SetShaderValue(lightingShader, locViewPos, camPosArr, SHADER_UNIFORM_VEC3);
 
